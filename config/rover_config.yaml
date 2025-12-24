@@ -1,0 +1,129 @@
+# Autonomous Rover Configuration
+
+# Arduino Communication
+arduino:
+  port: "/dev/ttyACM0"  # USB serial port
+  baudrate: 115200
+  timeout: 1.0
+  modbus:
+    slave_id: 1
+    method: "rtu"
+
+    # Modbus Register Map
+    registers:
+      # Sensors (Input Registers - Read Only)
+      ultrasonic_front_left: 0
+      ultrasonic_front_center: 1
+      ultrasonic_front_right: 2
+      ultrasonic_rear_left: 3
+      ultrasonic_rear_center: 4
+      ultrasonic_rear_right: 5
+
+      # Motor Control (Holding Registers - Read/Write)
+      motor_front_left_speed: 100    # -255 to 255
+      motor_front_right_speed: 101
+      motor_rear_left_speed: 102
+      motor_rear_right_speed: 103
+
+      # System Status
+      emergency_stop: 200            # 0=normal, 1=stop
+      system_mode: 201               # 0=manual, 1=auto
+
+# Mechanum Wheels Kinematics
+mechanum:
+  wheel_base: 0.30      # meters (distance between front and rear axles)
+  track_width: 0.25     # meters (distance between left and right wheels)
+  wheel_radius: 0.05    # meters
+  max_speed: 1.0        # m/s
+  max_acceleration: 0.5 # m/s²
+
+  # Motor directions (adjust based on physical setup)
+  invert_front_left: false
+  invert_front_right: true
+  invert_rear_left: false
+  invert_rear_right: true
+
+# Ultrasonic Sensors
+sensors:
+  ultrasonic:
+    max_range: 4.0      # meters
+    min_range: 0.02     # meters
+    fov: 15             # degrees (field of view)
+    update_rate: 20     # Hz
+
+    # Sensor positions relative to robot center (x, y, angle_deg)
+    positions:
+      front_left:   [0.15, 0.12, 30]
+      front_center: [0.18, 0.0, 0]
+      front_right:  [0.15, -0.12, -30]
+      rear_left:    [-0.15, 0.12, 150]
+      rear_center:  [-0.18, 0.0, 180]
+      rear_right:   [-0.15, -0.12, -150]
+
+# Vision System
+vision:
+  camera:
+    device_id: 0        # /dev/video0
+    width: 1280
+    height: 720
+    fps: 30
+
+  # GStreamer pipeline for hardware acceleration
+  use_gstreamer: true
+  gstreamer_pipeline: |
+    nvarguscamerasrc sensor-id={device_id} !
+    video/x-raw(memory:NVMM), width={width}, height={height}, framerate={fps}/1 !
+    nvvidconv ! video/x-raw, format=BGRx !
+    videoconvert ! video/x-raw, format=BGR !
+    appsink
+
+  # Object Detection
+  detection:
+    model_path: "models/yolov8n.onnx"
+    confidence_threshold: 0.5
+    nms_threshold: 0.4
+    use_tensorrt: true
+    input_size: [640, 640]
+
+  # Semantic Segmentation (optional)
+  segmentation:
+    enabled: false
+    model_path: "models/segmentation.engine"
+
+# Navigation
+navigation:
+  obstacle_avoidance:
+    enabled: true
+    safety_distance: 0.5      # meters
+    critical_distance: 0.3    # meters (emergency stop)
+    avoidance_speed_factor: 0.6
+
+  path_planning:
+    algorithm: "dwa"           # dynamic window approach
+    goal_tolerance: 0.1        # meters
+    planning_frequency: 10     # Hz
+
+  control:
+    pid_linear:
+      kp: 1.0
+      ki: 0.1
+      kd: 0.05
+    pid_angular:
+      kp: 1.5
+      ki: 0.2
+      kd: 0.1
+
+# System
+system:
+  log_level: "INFO"           # DEBUG, INFO, WARNING, ERROR
+  log_file: "logs/rover.log"
+  enable_telemetry: true
+  telemetry_port: 8080
+
+  # Safety
+  watchdog_timeout: 2.0       # seconds
+  enable_emergency_stop: true
+
+  # Performance
+  gpu_memory_fraction: 0.7    # Reserve 70% GPU memory
+  num_threads: 4

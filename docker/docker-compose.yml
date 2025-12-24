@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  autonomous-rover:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: autonomous-rover:latest
+    container_name: rover_main
+
+    runtime: nvidia
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      # Application code (for development)
+      - ../src:/workspace/autonomous-rover/src
+      - ../config:/workspace/autonomous-rover/config
+      - ../models:/workspace/autonomous-rover/models
+      - ../logs:/workspace/autonomous-rover/logs
+
+      # X11 for GUI (optional)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+      # USB devices for Arduino
+      - /dev:/dev
+
+      # Camera devices
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+
+    devices:
+      # Serial ports for Modbus
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyUSB0:/dev/ttyUSB0
+
+      # Camera devices
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+
+    privileged: true
+
+    network_mode: host
+
+    restart: unless-stopped
+
+    command: python3 src/main.py
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Monitoring dashboard
+  monitoring:
+    image: portainer/portainer-ce:latest
+    container_name: rover_monitor
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+volumes:
+  portainer_data:
