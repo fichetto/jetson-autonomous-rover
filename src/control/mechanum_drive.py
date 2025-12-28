@@ -1,182 +1,256 @@
 #!/usr/bin/env python3
 """
-Mechanum Wheel Drive Controller
-Handles omnidirectional movement kinematics
+CLOVER - Mechanum Wheel Drive Controller
+Handles omnidirectional movement kinematics for 4-wheel Mecanum platform.
+
+Hardware:
+    - 4x JGB 520 Motors (12V DC, 330 RPM, Hall encoder)
+    - Moebius Shield + PCA9685 (I2C) + HR8833 (H-Bridge)
+    - Chassis: 300 x 250 mm
 """
 
 import numpy as np
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 from dataclasses import dataclass
 from loguru import logger
 
 
 @dataclass
 class MechanumConfig:
-    """Mechanum drive configuration"""
-    wheel_base: float  # meters (front-rear distance)
-    track_width: float  # meters (left-right distance)
-    wheel_radius: float  # meters
-    max_speed: float  # m/s
-    max_acceleration: float  # m/s²
+    """Mechanum drive configuration for CLOVER robot"""
+    wheel_base: float = 0.25        # meters (front-rear distance)
+    track_width: float = 0.20       # meters (left-right distance)
+    wheel_radius: float = 0.05      # meters (100mm diameter)
+    max_speed: float = 1.0          # m/s
+    max_acceleration: float = 0.5   # m/s²
 
-    # Motor inversion flags
+    # Motor specifications (JGB 520)
+    motor_max_rpm: int = 330        # No-load RPM
+    encoder_cpr: int = 11           # Counts per motor revolution
+    gear_ratio: int = 30            # Gear reduction
+
+    # Motor inversion flags (adjust based on physical wiring)
     invert_front_left: bool = False
     invert_front_right: bool = True
     invert_rear_left: bool = False
     invert_rear_right: bool = True
 
 
+@dataclass
+class RobotVelocity:
+    """Robot velocity state"""
+    vx: float = 0.0     # Forward velocity (m/s)
+    vy: float = 0.0     # Lateral velocity (m/s, positive = left)
+    wz: float = 0.0     # Angular velocity (rad/s, positive = CCW)
+
+
 class MechanumDrive:
     """
-    Mechanum wheel drive controller with inverse kinematics
+    Mechanum wheel drive controller with inverse/forward kinematics.
 
-    Mechanum wheels allow omnidirectional movement:
+    Mecanum wheels allow omnidirectional movement:
     - Forward/Backward
     - Strafe left/right
     - Rotate in place
-    - Any combination of the above
+    - Any combination of the above (holonomic drive)
+
+    Wheel Configuration:
+        FL \\   / FR
+             X
+        RL /   \\ RR
+
+    The rollers on Mecanum wheels are at 45° angles, creating
+    forces that allow lateral movement.
     """
 
-    def __init__(self, config: MechanumConfig):
+    def __init__(self, config: Optional[MechanumConfig] = None):
         """
-        Initialize Mechanum drive controller
+        Initialize CLOVER Mecanum drive controller.
 
         Args:
-            config: Drive configuration
+            config: Drive configuration (uses defaults if None)
         """
-        self.config = config
+        self.config = config or MechanumConfig()
 
         # Kinematic parameters
-        self.l = (config.wheel_base + config.track_width) / 2  # Half of (wheelbase + track)
-        self.r = config.wheel_radius
+        # L = half of (wheelbase + track width)
+        self.L = (self.config.wheel_base + self.config.track_width) / 2
+        self.r = self.config.wheel_radius
 
         # Current velocity state
-        self.current_vx = 0.0  # m/s (forward)
-        self.current_vy = 0.0  # m/s (left)
-        self.current_wz = 0.0  # rad/s (rotation)
+        self.velocity = RobotVelocity()
 
-        logger.info("Mechanum drive initialized")
-        logger.debug(f"Wheelbase: {config.wheel_base}m, Track: {config.track_width}m")
+        # Encoder ticks per wheel revolution (after gearbox)
+        self.ticks_per_rev = self.config.encoder_cpr * self.config.gear_ratio
+
+        # Calculate max wheel angular velocity from motor RPM
+        self.max_wheel_rpm = self.config.motor_max_rpm / self.config.gear_ratio
+        self.max_wheel_omega = self.max_wheel_rpm * 2 * np.pi / 60  # rad/s
+
+        logger.info(f"CLOVER Mecanum drive initialized")
+        logger.debug(f"  Wheelbase: {self.config.wheel_base*1000:.0f}mm")
+        logger.debug(f"  Track width: {self.config.track_width*1000:.0f}mm")
+        logger.debug(f"  Max wheel RPM: {self.max_wheel_rpm:.1f}")
 
     def inverse_kinematics(self, vx: float, vy: float, wz: float
-                          ) -> Tuple[float, float, float, float]:
+                           ) -> Tuple[float, float, float, float]:
         """
-        Calculate wheel velocities from desired robot velocity
+        Calculate wheel velocities from desired robot velocity.
+
+        Mecanum inverse kinematics:
+            ω_fl = (1/r) * (vx - vy - L*wz)
+            ω_fr = (1/r) * (vx + vy + L*wz)
+            ω_rl = (1/r) * (vx + vy - L*wz)
+            ω_rr = (1/r) * (vx - vy + L*wz)
 
         Args:
             vx: Desired forward velocity (m/s)
             vy: Desired lateral velocity (m/s, positive = left)
-            wz: Desired angular velocity (rad/s, positive = counterclockwise)
+            wz: Desired angular velocity (rad/s, positive = CCW)
 
         Returns:
-            Tuple of wheel velocities (fl, fr, rl, rr) in m/s
+            Tuple of wheel angular velocities (fl, fr, rl, rr) in rad/s
         """
-        # Mechanum inverse kinematics matrix
-        # [vfl]   [1  -1  -l]   [vx]
-        # [vfr] = [1   1   l] * [vy]
-        # [vrl]   [1   1  -l]   [wz]
-        # [vrr]   [1  -1   l]
+        inv_r = 1.0 / self.r
 
-        vfl = vx - vy - self.l * wz
-        vfr = vx + vy + self.l * wz
-        vrl = vx + vy - self.l * wz
-        vrr = vx - vy + self.l * wz
+        omega_fl = inv_r * (vx - vy - self.L * wz)
+        omega_fr = inv_r * (vx + vy + self.L * wz)
+        omega_rl = inv_r * (vx + vy - self.L * wz)
+        omega_rr = inv_r * (vx - vy + self.L * wz)
 
-        return vfl, vfr, vrl, vrr
+        return omega_fl, omega_fr, omega_rl, omega_rr
 
-    def forward_kinematics(self, vfl: float, vfr: float, vrl: float, vrr: float
-                          ) -> Tuple[float, float, float]:
+    def forward_kinematics(self, omega_fl: float, omega_fr: float,
+                            omega_rl: float, omega_rr: float
+                            ) -> Tuple[float, float, float]:
         """
-        Calculate robot velocity from wheel velocities
+        Calculate robot velocity from wheel angular velocities.
 
         Args:
-            vfl, vfr, vrl, vrr: Wheel velocities (m/s)
+            omega_fl, omega_fr, omega_rl, omega_rr: Wheel angular velocities (rad/s)
 
         Returns:
-            Tuple of (vx, vy, wz)
+            Tuple of (vx, vy, wz) robot velocities
         """
-        vx = (vfl + vfr + vrl + vrr) / 4.0
-        vy = (-vfl + vfr + vrl - vrr) / 4.0
-        wz = (-vfl + vfr - vrl + vrr) / (4.0 * self.l)
+        r = self.r
+        L = self.L
+
+        vx = (r / 4.0) * (omega_fl + omega_fr + omega_rl + omega_rr)
+        vy = (r / 4.0) * (-omega_fl + omega_fr + omega_rl - omega_rr)
+        wz = (r / (4.0 * L)) * (-omega_fl + omega_fr - omega_rl + omega_rr)
 
         return vx, vy, wz
 
     def velocity_to_motor_speeds(self, vx: float, vy: float, wz: float,
-                                 max_motor_speed: int = 255
-                                 ) -> Tuple[int, int, int, int]:
+                                  max_pwm: int = 255
+                                  ) -> Tuple[int, int, int, int]:
         """
-        Convert velocity commands to motor PWM values
+        Convert velocity commands to motor PWM values.
 
         Args:
             vx: Forward velocity (m/s)
             vy: Lateral velocity (m/s)
             wz: Angular velocity (rad/s)
-            max_motor_speed: Maximum motor PWM value
+            max_pwm: Maximum motor PWM value (default 255)
 
         Returns:
             Tuple of motor speeds (fl, fr, rl, rr) in range [-255, 255]
         """
-        # Get wheel velocities
-        vfl, vfr, vrl, vrr = self.inverse_kinematics(vx, vy, wz)
+        # Get wheel angular velocities
+        omega_fl, omega_fr, omega_rl, omega_rr = self.inverse_kinematics(vx, vy, wz)
+        wheel_omegas = np.array([omega_fl, omega_fr, omega_rl, omega_rr])
 
-        # Normalize if any wheel exceeds max speed
-        wheel_speeds = np.array([vfl, vfr, vrl, vrr])
-        max_wheel_speed = np.max(np.abs(wheel_speeds))
+        # Normalize if any wheel exceeds max angular velocity
+        max_omega = np.max(np.abs(wheel_omegas))
+        if max_omega > self.max_wheel_omega:
+            scale = self.max_wheel_omega / max_omega
+            wheel_omegas *= scale
+            logger.debug(f"Velocity scaled by {scale:.2f} to limit motor speed")
 
-        if max_wheel_speed > self.config.max_speed:
-            scale = self.config.max_speed / max_wheel_speed
-            wheel_speeds *= scale
-            logger.debug(f"Scaled wheel speeds by {scale:.2f}")
+        # Convert angular velocity to PWM (linear mapping)
+        motor_speeds = (wheel_omegas / self.max_wheel_omega * max_pwm).astype(int)
 
-        # Convert to motor PWM (-255 to 255)
-        motor_speeds = (wheel_speeds / self.config.max_speed * max_motor_speed).astype(int)
-
-        # Apply motor inversions
-        if self.config.invert_front_left:
-            motor_speeds[0] *= -1
-        if self.config.invert_front_right:
-            motor_speeds[1] *= -1
-        if self.config.invert_rear_left:
-            motor_speeds[2] *= -1
-        if self.config.invert_rear_right:
-            motor_speeds[3] *= -1
+        # Apply motor inversions based on physical wiring
+        inversions = np.array([
+            -1 if self.config.invert_front_left else 1,
+            -1 if self.config.invert_front_right else 1,
+            -1 if self.config.invert_rear_left else 1,
+            -1 if self.config.invert_rear_right else 1
+        ])
+        motor_speeds = motor_speeds * inversions
 
         # Clamp to valid range
-        motor_speeds = np.clip(motor_speeds, -max_motor_speed, max_motor_speed)
+        motor_speeds = np.clip(motor_speeds, -max_pwm, max_pwm)
+
+        # Update current velocity state
+        self.velocity.vx = vx
+        self.velocity.vy = vy
+        self.velocity.wz = wz
 
         return tuple(motor_speeds.tolist())
 
+    def encoder_to_velocity(self, rpm_fl: int, rpm_fr: int,
+                             rpm_rl: int, rpm_rr: int
+                             ) -> Tuple[float, float, float]:
+        """
+        Calculate robot velocity from encoder RPM readings.
+
+        Args:
+            rpm_fl, rpm_fr, rpm_rl, rpm_rr: Encoder RPM readings
+
+        Returns:
+            Tuple of (vx, vy, wz) robot velocities
+        """
+        # Apply inversions to get correct direction
+        inversions = np.array([
+            -1 if self.config.invert_front_left else 1,
+            -1 if self.config.invert_front_right else 1,
+            -1 if self.config.invert_rear_left else 1,
+            -1 if self.config.invert_rear_right else 1
+        ])
+
+        # Convert RPM to rad/s
+        rpm_array = np.array([rpm_fl, rpm_fr, rpm_rl, rpm_rr]) * inversions
+        omega_array = rpm_array * 2 * np.pi / 60
+
+        return self.forward_kinematics(*omega_array)
+
+    # =========================================================================
+    # Movement Commands
+    # =========================================================================
+
     def move_forward(self, speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Move forward at given speed"""
+        """Move forward at given speed (m/s)"""
         return self.velocity_to_motor_speeds(speed, 0, 0)
 
     def move_backward(self, speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Move backward at given speed"""
+        """Move backward at given speed (m/s)"""
         return self.velocity_to_motor_speeds(-speed, 0, 0)
 
     def strafe_left(self, speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Strafe left at given speed"""
+        """Strafe left at given speed (m/s)"""
         return self.velocity_to_motor_speeds(0, speed, 0)
 
     def strafe_right(self, speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Strafe right at given speed"""
+        """Strafe right at given speed (m/s)"""
         return self.velocity_to_motor_speeds(0, -speed, 0)
 
     def rotate_left(self, angular_speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Rotate counterclockwise"""
+        """Rotate counterclockwise (rad/s)"""
         return self.velocity_to_motor_speeds(0, 0, angular_speed)
 
     def rotate_right(self, angular_speed: float = 0.5) -> Tuple[int, int, int, int]:
-        """Rotate clockwise"""
+        """Rotate clockwise (rad/s)"""
         return self.velocity_to_motor_speeds(0, 0, -angular_speed)
 
     def stop(self) -> Tuple[int, int, int, int]:
         """Stop all motors"""
+        self.velocity = RobotVelocity()
         return (0, 0, 0, 0)
 
     def move_diagonal(self, speed: float, angle_deg: float) -> Tuple[int, int, int, int]:
         """
-        Move in diagonal direction
+        Move in diagonal direction.
 
         Args:
             speed: Movement speed (m/s)
@@ -188,12 +262,11 @@ class MechanumDrive:
         angle_rad = np.radians(angle_deg)
         vx = speed * np.cos(angle_rad)
         vy = speed * np.sin(angle_rad)
-
         return self.velocity_to_motor_speeds(vx, vy, 0)
 
     def holonomic_drive(self, vx: float, vy: float, wz: float) -> Tuple[int, int, int, int]:
         """
-        Full holonomic control (move in any direction while rotating)
+        Full holonomic control (move in any direction while rotating).
 
         Args:
             vx: Forward velocity (m/s)
@@ -205,52 +278,88 @@ class MechanumDrive:
         """
         return self.velocity_to_motor_speeds(vx, vy, wz)
 
-    def get_motion_constraints(self) -> Dict[str, float]:
-        """
-        Get motion constraints
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
 
-        Returns:
-            Dictionary with max velocities
-        """
+    def get_motion_constraints(self) -> Dict[str, float]:
+        """Get motion constraints based on motor specifications."""
+        max_linear = self.max_wheel_omega * self.r
+        max_angular = max_linear / self.L
+
         return {
-            'max_linear_speed': self.config.max_speed,
-            'max_angular_speed': self.config.max_speed / self.l,
-            'max_acceleration': self.config.max_acceleration
+            'max_linear_speed': max_linear,
+            'max_angular_speed': max_angular,
+            'max_acceleration': self.config.max_acceleration,
+            'max_motor_rpm': self.max_wheel_rpm
         }
+
+    def get_current_velocity(self) -> RobotVelocity:
+        """Get current commanded velocity"""
+        return self.velocity
+
+    def rpm_to_linear_velocity(self, rpm: float) -> float:
+        """Convert wheel RPM to linear velocity (m/s)"""
+        omega = rpm * 2 * np.pi / 60  # rad/s
+        return omega * self.r
+
+    def linear_velocity_to_rpm(self, velocity: float) -> float:
+        """Convert linear velocity (m/s) to wheel RPM"""
+        omega = velocity / self.r  # rad/s
+        return omega * 60 / (2 * np.pi)
+
+
+def create_clover_drive() -> MechanumDrive:
+    """Factory function to create CLOVER drive with default config"""
+    return MechanumDrive(MechanumConfig())
 
 
 if __name__ == "__main__":
-    # Test mechanum drive
-    config = MechanumConfig(
-        wheel_base=0.30,
-        track_width=0.25,
-        wheel_radius=0.05,
-        max_speed=1.0,
-        max_acceleration=0.5
-    )
+    # Test CLOVER mechanum drive
+    print("=" * 60)
+    print("  CLOVER - Mecanum Drive Test")
+    print("=" * 60)
 
-    drive = MechanumDrive(config)
+    drive = create_clover_drive()
 
-    logger.info("Testing mechanum movements:")
+    # Print constraints
+    constraints = drive.get_motion_constraints()
+    print(f"\nMotion Constraints:")
+    print(f"  Max linear speed: {constraints['max_linear_speed']:.2f} m/s")
+    print(f"  Max angular speed: {constraints['max_angular_speed']:.2f} rad/s")
+    print(f"  Max motor RPM: {constraints['max_motor_rpm']:.1f}")
+
+    print(f"\nTesting movements:")
+    print("-" * 60)
 
     # Test different movements
     movements = [
-        ("Forward", drive.move_forward(0.5)),
-        ("Backward", drive.move_backward(0.5)),
-        ("Strafe Left", drive.strafe_left(0.5)),
-        ("Strafe Right", drive.strafe_right(0.5)),
-        ("Rotate Left", drive.rotate_left(0.5)),
-        ("Rotate Right", drive.rotate_right(0.5)),
+        ("Forward 0.5 m/s", drive.move_forward(0.5)),
+        ("Backward 0.5 m/s", drive.move_backward(0.5)),
+        ("Strafe Left 0.5 m/s", drive.strafe_left(0.5)),
+        ("Strafe Right 0.5 m/s", drive.strafe_right(0.5)),
+        ("Rotate Left 0.5 rad/s", drive.rotate_left(0.5)),
+        ("Rotate Right 0.5 rad/s", drive.rotate_right(0.5)),
         ("Diagonal 45°", drive.move_diagonal(0.5, 45)),
+        ("Diagonal 135°", drive.move_diagonal(0.5, 135)),
         ("Stop", drive.stop()),
     ]
 
     for name, speeds in movements:
-        logger.info(f"{name}: FL={speeds[0]:4d}, FR={speeds[1]:4d}, "
-                   f"RL={speeds[2]:4d}, RR={speeds[3]:4d}")
+        print(f"{name:25s} FL={speeds[0]:4d}  FR={speeds[1]:4d}  "
+              f"RL={speeds[2]:4d}  RR={speeds[3]:4d}")
 
     # Test holonomic drive
-    logger.info("\nHolonomic (forward + left + rotate):")
-    speeds = drive.holonomic_drive(0.5, 0.3, 0.2)
-    logger.info(f"FL={speeds[0]:4d}, FR={speeds[1]:4d}, "
-               f"RL={speeds[2]:4d}, RR={speeds[3]:4d}")
+    print(f"\n{'Holonomic (fwd+left+rot)':25s}", end="")
+    speeds = drive.holonomic_drive(0.3, 0.2, 0.3)
+    print(f"FL={speeds[0]:4d}  FR={speeds[1]:4d}  "
+          f"RL={speeds[2]:4d}  RR={speeds[3]:4d}")
+
+    # Test encoder to velocity
+    print("\n" + "=" * 60)
+    print("Encoder to Velocity Test:")
+    print("-" * 60)
+    vx, vy, wz = drive.encoder_to_velocity(100, 100, 100, 100)
+    print(f"All wheels @ 100 RPM: vx={vx:.3f} m/s, vy={vy:.3f} m/s, wz={wz:.3f} rad/s")
+
+    print("\n✓ Mecanum drive test completed")

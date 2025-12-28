@@ -1,6 +1,9 @@
-# Autonomous Rover Configuration
+# ================================================================================
+#                              PROGETTO CLOVER
+#                     Configurazione Sistema v1.0
+# ================================================================================
 
-# Arduino Communication
+# Arduino Communication (Modbus RTU via USB)
 arduino:
   port: "/dev/ttyACM0"  # USB serial port
   baudrate: 115200
@@ -11,59 +14,126 @@ arduino:
 
     # Modbus Register Map
     registers:
-      # Sensors (Input Registers - Read Only)
-      ultrasonic_front_left: 0
-      ultrasonic_front_center: 1
-      ultrasonic_front_right: 2
-      ultrasonic_rear_left: 3
-      ultrasonic_rear_center: 4
-      ultrasonic_rear_right: 5
+      # Motor Speed Commands (Holding Registers - Read/Write)
+      # Values: -255 to 255 (negative = reverse)
+      motor_front_left_speed: 100     # M1
+      motor_front_right_speed: 101    # M2
+      motor_rear_left_speed: 102      # M3
+      motor_rear_right_speed: 103     # M4
 
-      # Motor Control (Holding Registers - Read/Write)
-      motor_front_left_speed: 100    # -255 to 255
-      motor_front_right_speed: 101
-      motor_rear_left_speed: 102
-      motor_rear_right_speed: 103
+      # Encoder Feedback (Input Registers - Read Only)
+      encoder_m1_count: 200
+      encoder_m2_count: 201
+      encoder_m3_count: 202
+      encoder_m4_count: 203
+      encoder_m1_speed: 210           # RPM
+      encoder_m2_speed: 211
+      encoder_m3_speed: 212
+      encoder_m4_speed: 213
 
       # System Status
-      emergency_stop: 200            # 0=normal, 1=stop
-      system_mode: 201               # 0=manual, 1=auto
+      emergency_stop: 300             # 0=normal, 1=stop
+      system_mode: 301                # 0=manual, 1=auto
+      battery_voltage: 302            # mV (divide by 1000 for V)
+
+      # Ultrasonic Sensors (predisposti, non connessi)
+      ultrasonic_front_left: 400
+      ultrasonic_front_center: 401
+      ultrasonic_front_right: 402
+      ultrasonic_rear_left: 403
+      ultrasonic_rear_center: 404
+      ultrasonic_rear_right: 405
+
+# I2C Bus (PCA9685 PWM Controller)
+i2c:
+  pca9685:
+    address: 0x40                     # Default I2C address
+    pwm_frequency: 1000               # Hz (1 kHz for motors)
+
+# Motor Driver Shield - Moebius 4CH
+motor_driver:
+  type: "moebius"
+  pwm_controller: "PCA9685"
+  h_bridge: "HR8833"
+  voltage_range: [6, 12]              # V
+  max_current_per_channel: 1.5        # A continuous
+  max_current_peak: 3.0               # A peak
+
+# Motors - JGB 520
+motors:
+  type: "JGB520"
+  nominal_voltage: 12                 # V DC
+  no_load_speed: 330                  # RPM
+  encoder_type: "hall_effect"
+  encoder_cpr: 11                     # Counts per revolution (motor shaft)
+  gear_ratio: 30                      # Gear reduction ratio
+  quantity: 4
+
+# Chassis Dimensions
+chassis:
+  length: 0.30                        # meters (300 mm)
+  width: 0.25                         # meters (250 mm)
 
 # Mechanum Wheels Kinematics
 mechanum:
-  wheel_base: 0.30      # meters (distance between front and rear axles)
-  track_width: 0.25     # meters (distance between left and right wheels)
-  wheel_radius: 0.05    # meters
-  max_speed: 1.0        # m/s
-  max_acceleration: 0.5 # m/s²
+  wheel_base: 0.25                    # meters (distance between front and rear axles)
+  track_width: 0.20                   # meters (distance between left and right wheels)
+  wheel_radius: 0.05                  # meters (100mm diameter wheels)
+  max_speed: 1.0                      # m/s
+  max_acceleration: 0.5               # m/s²
 
   # Motor directions (adjust based on physical setup)
+  # Mecanum wheels require specific rotation directions
   invert_front_left: false
   invert_front_right: true
   invert_rear_left: false
   invert_rear_right: true
 
-# Ultrasonic Sensors
+# Power System - LiPo Battery 3S2P
+battery:
+  type: "LiPo"
+  configuration: "3S2P"               # 3 series, 2 parallel
+  nominal_voltage: 11.1               # V
+  max_voltage: 12.6                   # V (fully charged)
+  min_voltage: 9.0                    # V (cutoff, protect cells)
+  low_voltage_warning: 10.0           # V
+
+# Arduino Pin Mapping
+arduino_pins:
+  # Occupied pins
+  serial_rx: 0                        # D0 - Modbus RTU
+  serial_tx: 1                        # D1 - Modbus RTU
+  encoder_m1: 2                       # D2 - INT0
+  encoder_m2: 3                       # D3 - INT1
+  i2c_sda: "A4"                       # I2C Data (PCA9685)
+  i2c_scl: "A5"                       # I2C Clock (PCA9685)
+
+  # Available for expansion
+  digital_available: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+  analog_available: ["A0", "A1", "A2", "A3"]
+
+# Ultrasonic Sensors (predisposti per espansione)
 sensors:
   ultrasonic:
-    max_range: 4.0      # meters
-    min_range: 0.02     # meters
-    fov: 15             # degrees (field of view)
-    update_rate: 20     # Hz
+    enabled: false                    # Non ancora connessi
+    max_range: 4.0                    # meters
+    min_range: 0.02                   # meters
+    fov: 15                           # degrees (field of view)
+    update_rate: 20                   # Hz
 
     # Sensor positions relative to robot center (x, y, angle_deg)
     positions:
-      front_left:   [0.15, 0.12, 30]
-      front_center: [0.18, 0.0, 0]
-      front_right:  [0.15, -0.12, -30]
-      rear_left:    [-0.15, 0.12, 150]
-      rear_center:  [-0.18, 0.0, 180]
-      rear_right:   [-0.15, -0.12, -150]
+      front_left:   [0.15, 0.10, 30]
+      front_center: [0.15, 0.0, 0]
+      front_right:  [0.15, -0.10, -30]
+      rear_left:    [-0.15, 0.10, 150]
+      rear_center:  [-0.15, 0.0, 180]
+      rear_right:   [-0.15, -0.10, -150]
 
-# Vision System
+# Vision System (Jetson Orin Nano)
 vision:
   camera:
-    device_id: 0        # /dev/video0
+    device_id: 0                      # /dev/video0
     width: 1280
     height: 720
     fps: 30
@@ -94,14 +164,14 @@ vision:
 navigation:
   obstacle_avoidance:
     enabled: true
-    safety_distance: 0.5      # meters
-    critical_distance: 0.3    # meters (emergency stop)
+    safety_distance: 0.5              # meters
+    critical_distance: 0.3            # meters (emergency stop)
     avoidance_speed_factor: 0.6
 
   path_planning:
-    algorithm: "dwa"           # dynamic window approach
-    goal_tolerance: 0.1        # meters
-    planning_frequency: 10     # Hz
+    algorithm: "dwa"                  # dynamic window approach
+    goal_tolerance: 0.1               # meters
+    planning_frequency: 10            # Hz
 
   control:
     pid_linear:
@@ -115,15 +185,17 @@ navigation:
 
 # System
 system:
-  log_level: "INFO"           # DEBUG, INFO, WARNING, ERROR
-  log_file: "logs/rover.log"
+  project_name: "CLOVER"
+  version: "1.0"
+  log_level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
+  log_file: "logs/clover.log"
   enable_telemetry: true
   telemetry_port: 8080
 
   # Safety
-  watchdog_timeout: 2.0       # seconds
+  watchdog_timeout: 2.0               # seconds
   enable_emergency_stop: true
 
-  # Performance
-  gpu_memory_fraction: 0.7    # Reserve 70% GPU memory
+  # Performance (Jetson Orin Nano)
+  gpu_memory_fraction: 0.7            # Reserve 70% GPU memory
   num_threads: 4
