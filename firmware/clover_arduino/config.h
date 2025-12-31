@@ -95,48 +95,48 @@
 #define MODBUS_SLAVE_ID     1
 #define MODBUS_BAUDRATE     115200
 
-// Register count (must cover all addresses up to highest used)
-#define MODBUS_REGISTER_COUNT   500
-
 // Motor speed stop value (255 = stopped in 0-510 mapping)
 #define MOTOR_STOP_VALUE    255
 
 // ============================================================================
-// Modbus Register Map
+// Modbus Register Map (ModbusRTU library format)
 // ============================================================================
-// Must match Python client (modbus_client.py)
+// This library uses separate Input and Holding register arrays starting from 0
+// We need to map our logical addresses to array indices
 
-// Motor Speed Commands (Holding Registers - Read/Write)
-// Values: 0-510 where 255=stop, 0-254=reverse, 256-510=forward
-#define REG_MOTOR_FL_SPEED      100     // M1 Front Left
-#define REG_MOTOR_FR_SPEED      101     // M2 Front Right
-#define REG_MOTOR_RL_SPEED      102     // M3 Rear Left
-#define REG_MOTOR_RR_SPEED      103     // M4 Rear Right
+// --- HOLDING REGISTERS (Read/Write) ---
+// Motor Speed Commands: Values 0-510 where 255=stop
+#define HREG_MOTOR_FL_SPEED     0   // Holding[0]
+#define HREG_MOTOR_FR_SPEED     1   // Holding[1]
+#define HREG_MOTOR_RL_SPEED     2   // Holding[2]
+#define HREG_MOTOR_RR_SPEED     3   // Holding[3]
 
-// Encoder Counts (Input Registers - Read Only)
-#define REG_ENCODER_M1_COUNT    200
-#define REG_ENCODER_M2_COUNT    201
-#define REG_ENCODER_M3_COUNT    202
-#define REG_ENCODER_M4_COUNT    203
+// System Control
+#define HREG_EMERGENCY_STOP     10  // Holding[10]: 0=normal, 1=stop
+#define HREG_SYSTEM_MODE        11  // Holding[11]: 0=manual, 1=auto
+#define HREG_RESET_ENCODERS     12  // Holding[12]: Write 1 to reset all encoders
 
-// Encoder Speeds in RPM (Input Registers - Read Only)
-#define REG_ENCODER_M1_SPEED    210
-#define REG_ENCODER_M2_SPEED    211
-#define REG_ENCODER_M3_SPEED    212
-#define REG_ENCODER_M4_SPEED    213
+// Number of holding registers needed
+#define HOLDING_REG_COUNT       20
 
-// System Status (Holding Registers - Read/Write)
-#define REG_EMERGENCY_STOP      300     // 0=normal, 1=stop
-#define REG_SYSTEM_MODE         301     // 0=manual, 1=auto
-#define REG_BATTERY_VOLTAGE     302     // mV (divide by 1000 for V)
+// --- INPUT REGISTERS (Read Only) ---
+// Encoder Counts (16-bit, wraps around)
+#define IREG_ENCODER_M1_COUNT   0   // Input[0]
+#define IREG_ENCODER_M2_COUNT   1   // Input[1]
+#define IREG_ENCODER_M3_COUNT   2   // Input[2]
+#define IREG_ENCODER_M4_COUNT   3   // Input[3]
 
-// Ultrasonic Sensors (Input Registers - Reserved for expansion)
-#define REG_ULTRASONIC_FL       400
-#define REG_ULTRASONIC_FC       401
-#define REG_ULTRASONIC_FR       402
-#define REG_ULTRASONIC_RL       403
-#define REG_ULTRASONIC_RC       404
-#define REG_ULTRASONIC_RR       405
+// Encoder Speeds (RPM, signed via offset 32768)
+#define IREG_ENCODER_M1_SPEED   10  // Input[10]
+#define IREG_ENCODER_M2_SPEED   11  // Input[11]
+#define IREG_ENCODER_M3_SPEED   12  // Input[12]
+#define IREG_ENCODER_M4_SPEED   13  // Input[13]
+
+// Battery
+#define IREG_BATTERY_VOLTAGE    20  // Input[20]: mV
+
+// Number of input registers needed
+#define INPUT_REG_COUNT         25
 
 // ============================================================================
 // Timing Configuration

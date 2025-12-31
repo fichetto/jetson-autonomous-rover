@@ -82,6 +82,8 @@ Encoder Motori → Arduino (D2/D3 INT + polling M3/M4)
 - [x] Path planning in tempo reale
 - [x] Obstacle avoidance
 - [x] Monitoraggio batteria LiPo
+- [x] **VR Teleoperation** con Meta Quest 3
+- [x] **Stereo Camera Streaming** (WebRTC)
 - [ ] Fusione dati sensori ultrasuoni (predisposto)
 - [ ] SLAM (mapping ambiente)
 - [ ] Deep Learning per semantic segmentation
@@ -98,6 +100,55 @@ cd docker && docker-compose up -d
 # Esecuzione CLOVER
 python3 src/main.py
 ```
+
+## VR Teleoperation (Meta Quest 3)
+
+Controlla CLOVER in prima persona con visione stereo e joystick VR.
+
+### Avvio Server
+
+```bash
+# Avvio con configurazione automatica
+./start_teleop.py
+
+# Oppure modalità test (senza Arduino)
+./start_teleop.py --no-modbus
+
+# Risoluzione ridotta per WiFi lento
+./start_teleop.py --width 640 --height 480
+```
+
+### Architettura Teleop
+
+```
+┌─────────────────┐     WiFi      ┌─────────────────┐
+│   Meta Quest 3  │◄────────────► │  Jetson Orin    │
+│                 │               │                 │
+│  ┌───────────┐  │   WebRTC     │  ┌───────────┐  │
+│  │Video (VR) │◄─┼──────────────┼──┤Stereo Cam │  │
+│  └───────────┘  │  :8080       │  │ (IMX219x2)│  │
+│                 │               │  └───────────┘  │
+│  ┌───────────┐  │  WebSocket   │  ┌───────────┐  │
+│  │Controllers├──┼──────────────┼─►│Motor Ctrl │  │
+│  └───────────┘  │  :8081       │  │ (Modbus)  │  │
+└─────────────────┘               └─────────────────┘
+```
+
+### Controlli Quest 3
+
+| Input | Azione |
+|-------|--------|
+| Stick Sinistro Y | Avanti / Indietro |
+| Stick Sinistro X | Strafe Sinistra / Destra |
+| Stick Destro X | Rotazione |
+| Trigger Sinistro | Modalità Lenta (precisione) |
+| Trigger Destro | Modalità Veloce |
+| Pulsante B | **EMERGENCY STOP** |
+| Pulsante Y | Toggle UI |
+
+### Setup App Unity
+
+Vedi [unity/CloverVR/README.md](unity/CloverVR/README.md) per istruzioni complete su come configurare il progetto Unity per Quest 3.
 
 ## Comunicazione Arduino
 
