@@ -1,0 +1,26 @@
+# CLOVER Telegram Bot Configuration
+
+# Bot token from @BotFather (REQUIRED)
+# Get one by talking to @BotFather on Telegram
+bot_token: "8408586712:AAEihvOQ_7GvSYto1RpNCUeCEa2g0xCfwP8"
+
+# Authorized user IDs (optional but RECOMMENDED)
+# If empty, anyone can control the rover (NOT RECOMMENDED for production)
+# Get your user ID by sending /id to the bot
+authorized_users: []
+  # - 123456789
+  # - 987654321
+
+# Arduino connection settings
+modbus:
+  port: "/dev/ttyUSB0"
+  baudrate: 115200
+
+# Status monitoring interval (seconds)
+status_interval: 30
+
+# Battery alert settings
+battery:
+  warning_voltage: 10.0
+  critical_voltage: 9.0
+  alert_interval: 60  # seconds between alerts

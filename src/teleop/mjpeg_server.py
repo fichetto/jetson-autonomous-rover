@@ -327,9 +327,9 @@ class MJPEGServer:
         let activeKeys = new Set();
         let sendInterval = null;
 
-        // Connect to control server
+        // Connect to RoverService
         function connect() {{
-            const wsUrl = 'ws://' + window.location.hostname + ':8081/ws';
+            const wsUrl = 'ws://' + window.location.hostname + ':8082/ws';
             console.log('Connecting to', wsUrl);
 
             ws = new WebSocket(wsUrl);

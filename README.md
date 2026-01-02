@@ -37,6 +37,9 @@ Il progetto CLOVER è una piattaforma robotica mobile omnidirezionale basata su 
 ```
 clover/
 ├── src/
+│   ├── services/        # RoverService - servizio unificato controllo rover
+│   ├── telegram/        # Bot Telegram per controllo remoto
+│   ├── teleop/          # Server video MJPEG e interfaccia web
 │   ├── vision/          # Pipeline visione artificiale (CUDA/TensorRT)
 │   ├── navigation/      # Algoritmi path planning e obstacle avoidance
 │   ├── control/         # Controllo cinematica Mecanum wheels
@@ -48,6 +51,42 @@ clover/
 ├── logs/                # Log operativi
 └── tests/               # Unit e integration tests
 ```
+
+### Architettura Servizi Unificata
+
+Il sistema utilizza un'architettura a servizi che permette a più client di controllare il rover senza conflitti sulla connessione seriale:
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         RoverService (8082)         │
+                    │   Gestione centralizzata Arduino    │
+                    │   - Connessione Modbus unica        │
+                    │   - API HTTP/WebSocket              │
+                    │   - Arbitraggio priorità            │
+                    │   - Watchdog sicurezza              │
+                    └──────────────┬──────────────────────┘
+                                   │ USB Serial
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │        Arduino (Modbus Slave)       │
+                    └─────────────────────────────────────┘
+                                   ▲
+        ┌──────────────────────────┼──────────────────────────┐
+        │                          │                          │
+┌───────┴───────┐        ┌─────────┴────────┐       ┌─────────┴────────┐
+│  Interfaccia  │        │   Telegram Bot   │       │  Guida Autonoma  │
+│  Web (8090)   │        │                  │       │   (futuro)       │
+│               │        │  /start /status  │       │                  │
+│  MJPEG Stream │        │  /manual /auto   │       │  Path Planning   │
+│  Controlli    │        │  /stop /estop    │       │  Obstacle Avoid  │
+└───────────────┘        └──────────────────┘       └──────────────────┘
+```
+
+**Porte di servizio:**
+| Porta | Servizio | Descrizione |
+|-------|----------|-------------|
+| 8082  | RoverService | API controllo motori (HTTP + WebSocket) |
+| 8090  | MJPEG Server | Streaming video stereo + interfaccia web |
 
 ## Architettura Hardware
 
@@ -83,7 +122,10 @@ Encoder Motori → Arduino (D2/D3 INT + polling M3/M4)
 - [x] Obstacle avoidance
 - [x] Monitoraggio batteria LiPo
 - [x] **VR Teleoperation** con Meta Quest 3
-- [x] **Stereo Camera Streaming** (WebRTC)
+- [x] **Stereo Camera Streaming** (MJPEG)
+- [x] **Interfaccia Web** per controllo manuale
+- [x] **Bot Telegram** per controllo remoto e monitoraggio
+- [x] **Architettura unificata** multi-client
 - [ ] Fusione dati sensori ultrasuoni (predisposto)
 - [ ] SLAM (mapping ambiente)
 - [ ] Deep Learning per semantic segmentation
@@ -94,12 +136,20 @@ Encoder Motori → Arduino (D2/D3 INT + polling M3/M4)
 # Installazione dipendenze
 pip3 install -r requirements.txt
 
-# Build container Docker
-cd docker && docker-compose up -d
+# Avvio servizio unificato (RoverService)
+python3 start_rover_service.py --serial /dev/ttyUSB0
 
-# Esecuzione CLOVER
-python3 src/main.py
+# Avvio server video MJPEG (in altro terminale)
+python3 src/teleop/mjpeg_server.py --port 8090
+
+# Avvio bot Telegram (in altro terminale)
+python3 start_telegram.py --service-url http://localhost:8082
 ```
+
+### Accesso Interfacce
+
+- **Interfaccia Web**: http://IP_JETSON:8090
+- **Telegram Bot**: Cerca il bot configurato e usa /start
 
 ## VR Teleoperation (Meta Quest 3)
 
@@ -124,13 +174,13 @@ Controlla CLOVER in prima persona con visione stereo e joystick VR.
 ┌─────────────────┐     WiFi      ┌─────────────────┐
 │   Meta Quest 3  │◄────────────► │  Jetson Orin    │
 │                 │               │                 │
-│  ┌───────────┐  │   WebRTC     │  ┌───────────┐  │
+│  ┌───────────┐  │    MJPEG     │  ┌───────────┐  │
 │  │Video (VR) │◄─┼──────────────┼──┤Stereo Cam │  │
-│  └───────────┘  │  :8080       │  │ (IMX219x2)│  │
+│  └───────────┘  │  :8090       │  │ (IMX219x2)│  │
 │                 │               │  └───────────┘  │
 │  ┌───────────┐  │  WebSocket   │  ┌───────────┐  │
-│  │Controllers├──┼──────────────┼─►│Motor Ctrl │  │
-│  └───────────┘  │  :8081       │  │ (Modbus)  │  │
+│  │Controllers├──┼──────────────┼─►│RoverSvc   │  │
+│  └───────────┘  │  :8082       │  │ (Modbus)  │  │
 └─────────────────┘               └─────────────────┘
 ```
 
@@ -149,6 +199,71 @@ Controlla CLOVER in prima persona con visione stereo e joystick VR.
 ### Setup App Unity
 
 Vedi [unity/CloverVR/README.md](unity/CloverVR/README.md) per istruzioni complete su come configurare il progetto Unity per Quest 3.
+
+## Bot Telegram
+
+Il bot Telegram permette di controllare e monitorare CLOVER da remoto.
+
+### Configurazione
+
+1. Crea un bot con [@BotFather](https://t.me/BotFather) su Telegram
+2. Copia il token in `config/telegram_config.yaml`
+3. Avvia il bot: `python3 start_telegram.py`
+
+### Comandi Disponibili
+
+| Comando | Descrizione |
+|---------|-------------|
+| `/start` | Avvia il bot e mostra menu |
+| `/status` | Stato rover (batteria, modo, connessione) |
+| `/connect` | Connetti ad Arduino |
+| `/disconnect` | Disconnetti Arduino |
+| `/manual` | Modalità controllo manuale |
+| `/auto` | Modalità guida autonoma |
+| `/stop` | Ferma i motori |
+| `/estop` | **EMERGENCY STOP** |
+| `/help` | Aiuto comandi |
+
+### Controllo Movimento (Modalità Manuale)
+
+In modalità manuale, usa i pulsanti inline per controllare il rover:
+- Frecce direzionali per movimento
+- Pulsanti rotazione per girare sul posto
+- Slider velocità per regolare la potenza
+
+## RoverService API
+
+Il RoverService espone API HTTP e WebSocket per il controllo del rover.
+
+### Endpoint HTTP
+
+| Metodo | Endpoint | Descrizione |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/status` | Stato completo rover |
+| POST | `/connect` | Connetti Arduino `{"port": "/dev/ttyUSB0"}` |
+| POST | `/disconnect` | Disconnetti Arduino |
+| POST | `/move` | Movimento `{"vx": 0.5, "vy": 0, "wz": 0}` |
+| POST | `/stop` | Ferma motori |
+| POST | `/estop` | Emergency stop |
+| POST | `/mode` | Cambia modo `{"mode": "manual"}` |
+
+### WebSocket `/ws`
+
+Connessione WebSocket per controllo real-time:
+
+```json
+// Imposta modalità
+{"type": "set_mode", "mode": "teleop"}
+
+// Comando movimento (stile controller)
+{
+  "type": "controller_state",
+  "left_thumbstick_x": 0.0,
+  "left_thumbstick_y": 0.5,
+  "right_thumbstick_x": 0.0
+}
+```
 
 ## Comunicazione Arduino
 

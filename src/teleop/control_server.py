@@ -129,6 +129,9 @@ class TeleopControlServer:
         self.app.router.add_get("/status", self._handle_status)
         self.app.router.add_post("/mode", self._handle_set_mode)
         self.app.router.add_post("/stop", self._handle_emergency_stop)
+        self.app.router.add_post("/arduino/connect", self._handle_arduino_connect)
+        self.app.router.add_post("/arduino/disconnect", self._handle_arduino_disconnect)
+        self.app.router.add_get("/arduino/status", self._handle_arduino_status)
 
     def _apply_deadzone(self, value: float) -> float:
         """Apply deadzone to joystick value"""
@@ -375,6 +378,87 @@ class TeleopControlServer:
         """Emergency stop via HTTP"""
         await self._emergency_stop()
         return web.json_response({"success": True, "stopped": True})
+
+    async def _handle_arduino_connect(self, request: web.Request) -> web.Response:
+        """Connect to Arduino via Modbus"""
+        try:
+            data = await request.json() if request.body_exists else {}
+            port = data.get("port", "/dev/ttyUSB0")
+            baudrate = data.get("baudrate", 115200)
+
+            # Disconnect existing connection first
+            if self.modbus_client:
+                try:
+                    self.modbus_client.disconnect()
+                except:
+                    pass
+
+            # Create new connection
+            self.modbus_client = CloverModbusClient(port=port, baudrate=baudrate)
+            if self.modbus_client.connect():
+                self.rover_state.connected = True
+                logger.success(f"Arduino connected on {port}")
+                return web.json_response({
+                    "success": True,
+                    "connected": True,
+                    "port": port
+                })
+            else:
+                self.modbus_client = None
+                self.rover_state.connected = False
+                return web.json_response({
+                    "success": False,
+                    "error": "Connection failed"
+                }, status=500)
+        except Exception as e:
+            logger.error(f"Arduino connect error: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def _handle_arduino_disconnect(self, request: web.Request) -> web.Response:
+        """Disconnect from Arduino"""
+        try:
+            if self.modbus_client:
+                # Stop motors first
+                try:
+                    self.modbus_client.stop_all_motors()
+                except:
+                    pass
+                self.modbus_client.disconnect()
+                self.modbus_client = None
+
+            self.rover_state.connected = False
+            self.set_mode(ControlMode.DISABLED)
+            logger.info("Arduino disconnected")
+            return web.json_response({
+                "success": True,
+                "connected": False
+            })
+        except Exception as e:
+            logger.error(f"Arduino disconnect error: {e}")
+            return web.json_response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
+
+    async def _handle_arduino_status(self, request: web.Request) -> web.Response:
+        """Get Arduino connection status"""
+        connected = self.modbus_client is not None and self.modbus_client.is_connected
+        status = {
+            "connected": connected,
+            "port": self.modbus_client.port if self.modbus_client else None
+        }
+
+        # Get battery voltage if connected
+        if connected:
+            try:
+                status["battery_voltage"] = self.modbus_client.read_battery_voltage()
+            except:
+                status["battery_voltage"] = None
+
+        return web.json_response(status)
 
     async def start(self):
         """Start the control server"""

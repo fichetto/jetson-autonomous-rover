@@ -103,6 +103,79 @@
         button.danger:hover {
             background: #ff3344;
         }
+        button.success {
+            background: #2ed573;
+            color: white;
+        }
+        button.success:hover {
+            background: #26b85f;
+        }
+        button.warning {
+            background: #ffa502;
+            color: #1a1a2e;
+        }
+        button.warning:hover {
+            background: #e69500;
+        }
+        .arduino-panel {
+            margin-top: 20px;
+            background: #16213e;
+            padding: 20px;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 500px;
+        }
+        .arduino-panel h3 {
+            margin-bottom: 15px;
+            color: #00d4ff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .arduino-controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .arduino-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: #0d0d1a;
+            border-radius: 6px;
+            font-family: monospace;
+        }
+        .movement-controls {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: repeat(3, 70px);
+            gap: 10px;
+            justify-content: center;
+        }
+        .movement-controls button {
+            width: 70px;
+            height: 70px;
+            font-size: 24px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .movement-controls .empty {
+            visibility: hidden;
+        }
+        .speed-control {
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            justify-content: center;
+        }
+        .speed-control input[type="range"] {
+            width: 150px;
+        }
         .info {
             margin-top: 20px;
             background: #16213e;
@@ -178,7 +251,7 @@
     </div>
 
     <div class="video-container">
-        <video id="videoElement" autoplay playsinline muted></video>
+        <img id="videoElement" alt="Video Stream" style="max-width: 100%; height: auto;">
     </div>
 
     <div class="view-mode">
@@ -198,9 +271,44 @@
     </div>
 
     <div class="controls">
-        <button id="connectBtn" onclick="connect()">Connetti</button>
-        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnetti</button>
         <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
+    </div>
+
+    <!-- Arduino Control Panel -->
+    <div class="arduino-panel">
+        <h3>🔌 Controllo Arduino</h3>
+        <div class="arduino-controls">
+            <div class="arduino-status">
+                <div class="status-dot" id="arduinoDot"></div>
+                <span id="arduinoStatus">Disconnesso</span>
+            </div>
+            <button id="arduinoConnectBtn" class="success" onclick="arduinoConnect()">Connetti</button>
+            <button id="arduinoDisconnectBtn" class="warning" onclick="arduinoDisconnect()" disabled>Disconnetti</button>
+            <button class="danger" onclick="emergencyStop()">🛑 STOP</button>
+        </div>
+
+        <!-- Movement Controls -->
+        <div class="movement-controls" id="movementControls" style="display: none;">
+            <div class="empty"></div>
+            <button onmousedown="moveStart('forward')" onmouseup="moveStop()" ontouchstart="moveStart('forward')" ontouchend="moveStop()">⬆️</button>
+            <div class="empty"></div>
+            <button onmousedown="moveStart('left')" onmouseup="moveStop()" ontouchstart="moveStart('left')" ontouchend="moveStop()">⬅️</button>
+            <button onmousedown="moveStop()" onclick="moveStop()">⏹️</button>
+            <button onmousedown="moveStart('right')" onmouseup="moveStop()" ontouchstart="moveStart('right')" ontouchend="moveStop()">➡️</button>
+            <button onmousedown="moveStart('rotL')" onmouseup="moveStop()" ontouchstart="moveStart('rotL')" ontouchend="moveStop()">↺</button>
+            <button onmousedown="moveStart('backward')" onmouseup="moveStop()" ontouchstart="moveStart('backward')" ontouchend="moveStop()">⬇️</button>
+            <button onmousedown="moveStart('rotR')" onmouseup="moveStop()" ontouchstart="moveStart('rotR')" ontouchend="moveStop()">↻</button>
+        </div>
+
+        <div class="speed-control" id="speedControl" style="display: none;">
+            <span>Velocità:</span>
+            <input type="range" id="speedSlider" min="50" max="255" value="150">
+            <span id="speedValue">150</span>
+        </div>
+
+        <div class="arduino-status" id="batteryStatus" style="margin-top: 15px; display: none;">
+            🔋 Batteria: <span id="batteryVoltage">--</span>V
+        </div>
     </div>
 
     <div class="info">
@@ -223,13 +331,11 @@
     <div id="log"></div>
 
     <script>
-        let pc = null;
-        let statsInterval = null;
-
-        // Auto-detect server URL
-        const defaultPort = 8080;
+        // Auto-detect server URL for video
+        const videoPort = 8090;
+        const videoServerUrl = `http://${window.location.hostname || 'localhost'}:${videoPort}`;
         const serverInput = document.getElementById('serverUrl');
-        serverInput.value = `http://${window.location.hostname || 'localhost'}:${defaultPort}`;
+        serverInput.value = videoServerUrl;
 
         function log(message, type = '') {
             const logDiv = document.getElementById('log');
@@ -243,145 +349,57 @@
         function updateStatus(status, connected) {
             document.getElementById('connectionStatus').textContent = status;
             const dot = document.getElementById('connectionDot');
-            dot.className = 'status-dot' + (connected ? ' connected' : status === 'Connessione...' ? ' connecting' : '');
+            dot.className = 'status-dot' + (connected ? ' connected' : '');
         }
 
-        async function connect() {
-            if (pc) {
-                log('Già connesso', 'error');
-                return;
-            }
+        // Auto-start video stream on page load
+        let videoInterval = null;
 
-            const serverUrl = serverInput.value;
-            log(`Connessione a ${serverUrl}...`, 'info');
+        function startVideoStream() {
+            const videoElement = document.getElementById('videoElement');
+
+            // Try MJPEG stream first
+            const streamUrl = `${videoServerUrl}/stream`;
+            log(`Avvio stream MJPEG...`, 'info');
             updateStatus('Connessione...', false);
 
-            document.getElementById('connectBtn').disabled = true;
+            videoElement.src = streamUrl;
 
-            try {
-                // Create peer connection
-                pc = new RTCPeerConnection({
-                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-                });
-
-                pc.ontrack = (event) => {
-                    log('Track video ricevuto', 'success');
-                    document.getElementById('videoElement').srcObject = event.streams[0];
-                    updateResolutionInfo();
-                };
-
-                pc.oniceconnectionstatechange = () => {
-                    log(`ICE state: ${pc.iceConnectionState}`);
-                    if (pc.iceConnectionState === 'connected') {
-                        updateStatus('Connesso', true);
-                        document.getElementById('disconnectBtn').disabled = false;
-                        startStats();
-                    } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                        updateStatus('Disconnesso', false);
-                        stopStats();
-                    }
-                };
-
-                // Add transceiver for receiving video
-                pc.addTransceiver('video', { direction: 'recvonly' });
-
-                // Create offer
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-
-                // Wait for ICE gathering
-                await new Promise((resolve) => {
-                    if (pc.iceGatheringState === 'complete') {
-                        resolve();
-                    } else {
-                        pc.onicegatheringstatechange = () => {
-                            if (pc.iceGatheringState === 'complete') resolve();
-                        };
-                    }
-                });
-
-                // Send offer to server
-                const response = await fetch(`${serverUrl}/offer`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        type: pc.localDescription.type,
-                        sdp: pc.localDescription.sdp
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
+            // Set a timeout to check if stream loaded
+            setTimeout(() => {
+                if (videoElement.naturalWidth > 0) {
+                    updateStatus('Connesso', true);
+                    log('Stream MJPEG attivo', 'success');
+                    document.getElementById('resolution').textContent = `${videoElement.naturalWidth} x ${videoElement.naturalHeight}`;
+                    document.getElementById('codec').textContent = 'MJPEG';
+                    document.getElementById('statsDisplay').textContent = 'MJPEG Stream';
+                } else {
+                    // Fallback to polling snapshots
+                    log('Fallback a snapshot polling...', 'info');
+                    startSnapshotPolling();
                 }
+            }, 2000);
+        }
 
-                const answer = await response.json();
+        function startSnapshotPolling() {
+            const videoElement = document.getElementById('videoElement');
+            const snapshotUrl = `${videoServerUrl}/snapshot`;
 
-                if (answer.error) {
-                    throw new Error(answer.error);
-                }
-
-                await pc.setRemoteDescription(answer);
-                log('Connessione WebRTC stabilita', 'success');
-
-            } catch (error) {
-                log(`Errore: ${error.message}`, 'error');
-                updateStatus('Errore', false);
-                document.getElementById('connectBtn').disabled = false;
-                if (pc) {
-                    pc.close();
-                    pc = null;
-                }
+            function updateFrame() {
+                videoElement.src = `${snapshotUrl}?t=${Date.now()}`;
             }
-        }
 
-        function disconnect() {
-            if (pc) {
-                pc.close();
-                pc = null;
-            }
-            document.getElementById('videoElement').srcObject = null;
-            document.getElementById('connectBtn').disabled = false;
-            document.getElementById('disconnectBtn').disabled = true;
-            updateStatus('Disconnesso', false);
-            stopStats();
-            log('Disconnesso', 'info');
-        }
+            updateFrame();
+            videoInterval = setInterval(updateFrame, 100); // 10 FPS
 
-        function startStats() {
-            statsInterval = setInterval(async () => {
-                if (!pc) return;
-
-                const stats = await pc.getStats();
-                stats.forEach(report => {
-                    if (report.type === 'inbound-rtp' && report.kind === 'video') {
-                        const fps = report.framesPerSecond || '--';
-                        const bytesReceived = report.bytesReceived || 0;
-                        const kbps = Math.round((bytesReceived * 8) / 1000);
-                        document.getElementById('statsDisplay').textContent =
-                            `${fps} fps | ${kbps} kbps`;
-
-                        if (report.decoderImplementation) {
-                            document.getElementById('codec').textContent = report.decoderImplementation;
-                        }
-                    }
-                });
-            }, 1000);
-        }
-
-        function stopStats() {
-            if (statsInterval) {
-                clearInterval(statsInterval);
-                statsInterval = null;
-            }
-            document.getElementById('statsDisplay').textContent = '--';
-        }
-
-        function updateResolutionInfo() {
-            const video = document.getElementById('videoElement');
-            video.onloadedmetadata = () => {
-                document.getElementById('resolution').textContent =
-                    `${video.videoWidth} x ${video.videoHeight}`;
+            videoElement.onload = () => {
+                updateStatus('Connesso', true);
+                document.getElementById('resolution').textContent = `${videoElement.naturalWidth} x ${videoElement.naturalHeight}`;
+                document.getElementById('codec').textContent = 'JPEG Polling';
+                document.getElementById('statsDisplay').textContent = '~10 FPS';
             };
+
+            log('Snapshot polling attivo', 'success');
         }
 
         function toggleFullscreen() {
@@ -416,6 +434,193 @@
 
         // Auto-connect on load (optional)
         // window.onload = connect;
+
+        // ============ Arduino Control ============
+        const controlServerPort = 8082;
+        let controlServerUrl = `http://${window.location.hostname || 'localhost'}:${controlServerPort}`;
+        let arduinoConnected = false;
+        let moveInterval = null;
+        let batteryInterval = null;
+
+        function updateArduinoStatus(connected, status = null) {
+            arduinoConnected = connected;
+            const dot = document.getElementById('arduinoDot');
+            const statusText = document.getElementById('arduinoStatus');
+
+            dot.className = 'status-dot' + (connected ? ' connected' : '');
+            statusText.textContent = status || (connected ? 'Connesso' : 'Disconnesso');
+
+            document.getElementById('arduinoConnectBtn').disabled = connected;
+            document.getElementById('arduinoDisconnectBtn').disabled = !connected;
+
+            // Show/hide movement controls
+            document.getElementById('movementControls').style.display = connected ? 'grid' : 'none';
+            document.getElementById('speedControl').style.display = connected ? 'flex' : 'none';
+            document.getElementById('batteryStatus').style.display = connected ? 'flex' : 'none';
+        }
+
+        async function arduinoConnect() {
+            log('Connessione ad Arduino...', 'info');
+            updateArduinoStatus(false, 'Connessione...');
+
+            try {
+                const response = await fetch(`${controlServerUrl}/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port: '/dev/ttyUSB0' })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    updateArduinoStatus(true);
+                    log(`Arduino connesso su ${data.port}`, 'success');
+                    startBatteryMonitor();
+                } else {
+                    updateArduinoStatus(false);
+                    log(`Errore connessione: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                updateArduinoStatus(false);
+                log(`Errore: ${error.message}`, 'error');
+            }
+        }
+
+        async function arduinoDisconnect() {
+            log('Disconnessione Arduino...', 'info');
+
+            try {
+                const response = await fetch(`${controlServerUrl}/disconnect`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+                updateArduinoStatus(false);
+                stopBatteryMonitor();
+                log('Arduino disconnesso', 'info');
+            } catch (error) {
+                log(`Errore: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkArduinoStatus() {
+            try {
+                const response = await fetch(`${controlServerUrl}/status`);
+                const data = await response.json();
+                updateArduinoStatus(data.connected);
+
+                if (data.connected && data.battery_voltage) {
+                    document.getElementById('batteryVoltage').textContent = data.battery_voltage.toFixed(2);
+                }
+            } catch (error) {
+                // Server not reachable
+            }
+        }
+
+        async function emergencyStop() {
+            log('🛑 EMERGENCY STOP!', 'error');
+            try {
+                await fetch(`${controlServerUrl}/estop`, { method: 'POST' });
+            } catch (error) {
+                log(`Errore stop: ${error.message}`, 'error');
+            }
+        }
+
+        // Movement functions using WebSocket to control server
+        let ws = null;
+
+        function connectControlWS() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+
+            ws = new WebSocket(`ws://${window.location.hostname}:${controlServerPort}/ws`);
+            ws.onopen = () => log('WebSocket controllo connesso', 'success');
+            ws.onclose = () => { ws = null; };
+            ws.onerror = (e) => log('WebSocket error', 'error');
+        }
+
+        function moveStart(direction) {
+            if (!arduinoConnected) return;
+
+            const speed = parseInt(document.getElementById('speedSlider').value);
+            const speedNorm = speed / 255;  // Normalize to 0-1
+
+            let vx = 0, vy = 0, wz = 0;
+            switch (direction) {
+                case 'forward': vx = speedNorm; break;
+                case 'backward': vx = -speedNorm; break;
+                case 'left': vy = speedNorm; break;
+                case 'right': vy = -speedNorm; break;
+                case 'rotL': wz = speedNorm * 2; break;
+                case 'rotR': wz = -speedNorm * 2; break;
+            }
+
+            // Connect WS and send command
+            connectControlWS();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                // First enable teleop mode
+                ws.send(JSON.stringify({
+                    type: 'set_mode',
+                    mode: 'teleop'
+                }));
+
+                // Send continuous commands
+                clearInterval(moveInterval);
+                moveInterval = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'controller_state',
+                            left_thumbstick_x: vy,
+                            left_thumbstick_y: vx,
+                            right_thumbstick_x: -wz / 2,
+                            timestamp: Date.now()
+                        }));
+                    }
+                }, 50);
+            }
+        }
+
+        function moveStop() {
+            clearInterval(moveInterval);
+            moveInterval = null;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'controller_state',
+                    left_thumbstick_x: 0,
+                    left_thumbstick_y: 0,
+                    right_thumbstick_x: 0,
+                    timestamp: Date.now()
+                }));
+            }
+        }
+
+        function startBatteryMonitor() {
+            batteryInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${controlServerUrl}/status`);
+                    const data = await response.json();
+                    if (data.battery_voltage) {
+                        document.getElementById('batteryVoltage').textContent = data.battery_voltage.toFixed(2);
+                    }
+                } catch (e) {}
+            }, 5000);
+        }
+
+        function stopBatteryMonitor() {
+            clearInterval(batteryInterval);
+            batteryInterval = null;
+        }
+
+        // Speed slider
+        document.getElementById('speedSlider').addEventListener('input', (e) => {
+            document.getElementById('speedValue').textContent = e.target.value;
+        });
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            startVideoStream();
+            checkArduinoStatus();
+            connectControlWS();
+        });
     </script>
 </body>
 </html>
