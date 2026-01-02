@@ -2,6 +2,8 @@
 
 Sistema di guida autonoma per rover con ruote Mecanum, basato su Jetson Orin Nano con visione artificiale accelerata da GPU NVIDIA.
 
+![CLOVER Rover](docs/images/clover_rover.png)
+
 ## Descrizione
 
 Il progetto CLOVER è una piattaforma robotica mobile omnidirezionale basata su chassis con ruote Mecanum. Il sistema è progettato per movimentazione autonoma in ambienti interni con comunicazione Modbus RTU su interfaccia seriale USB.
