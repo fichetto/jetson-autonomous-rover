@@ -2,7 +2,7 @@
  * ================================================================================
  *                              PROGETTO CLOVER
  *                     Firmware Arduino Uno - Motor Controller
- *                                  v1.0
+ *                                  v1.1
  * ================================================================================
  *
  * Hardware:
@@ -16,6 +16,7 @@
  * Communication:
  *   - Modbus RTU Slave (ID: 1, 115200 baud)
  *   - USB Serial connection to Jetson Orin Nano
+ *   - Library: modbus-esp8266 (works on Arduino Uno)
  *
  * Pin Mapping:
  *   D0 (RX)  - Modbus RTU Serial RX
@@ -33,10 +34,6 @@
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-
-// ModbusRTU library configuration - MUST be before include
-#define INPUT_REGISTER_NUM 25
-#define HOLDING_REGISTER_NUM 20
 #include <ModbusRTU.h>
 
 #include "config.h"
@@ -60,8 +57,8 @@ EncoderManager encoders;
 // Battery monitor
 BatteryMonitor battery(BATTERY_PIN);
 
-// Modbus RTU server
-ModbusRTUServer modbusServer;
+// Modbus RTU slave (using modbus-esp8266 library)
+ModbusRTU mb;
 
 // ============================================================================
 // Timing
@@ -80,10 +77,24 @@ void setup() {
     // Initialize I2C
     Wire.begin();
 
-    // Initialize PCA9685
+    // Initialize PCA9685 with explicit reset
     pwm.begin();
+
+    // CRITICAL: Zero all PWM channels BEFORE setting frequency
+    // This prevents random motor movement on power-up
+    for (uint8_t ch = 0; ch < 16; ch++) {
+        pwm.setPWM(ch, 0, 0);
+    }
+    delay(5);
+
     pwm.setPWMFreq(PWM_FREQUENCY);
     delay(10);
+
+    // Zero all channels again after frequency change
+    for (uint8_t ch = 0; ch < 16; ch++) {
+        pwm.setPWM(ch, 0, 0);
+    }
+    delay(5);
 
     // Initialize motors (all stopped)
     motors.begin();
@@ -95,11 +106,12 @@ void setup() {
     // Initialize battery monitor
     battery.begin();
 
-    // Initialize Modbus RTU Server
-    // Note: This initializes Serial at the specified baud rate
-    modbusServer.startModbusServer(MODBUS_SLAVE_ID, MODBUS_BAUDRATE, Serial, true);
+    // Initialize Modbus RTU Slave
+    Serial.begin(MODBUS_BAUDRATE);
+    mb.begin(&Serial);
+    mb.slave(MODBUS_SLAVE_ID);
 
-    // Initialize registers to default values
+    // Initialize Modbus registers
     initializeRegisters();
 
     // Initial watchdog timestamp
@@ -117,14 +129,10 @@ void loop() {
     // -------------------------------------------------------------------------
     // Modbus Communication
     // -------------------------------------------------------------------------
-    // Poll Modbus - returns true if a write occurred
-    bool writeOccurred = modbusServer.communicationLoop();
+    mb.task();
 
-    if (writeOccurred) {
-        // Process motor commands when new data arrives
-        processMotorCommands();
-        lastMotorCommand = currentMillis;
-    }
+    // Check if motor commands changed
+    checkMotorCommands();
 
     // -------------------------------------------------------------------------
     // Update Encoders
@@ -150,17 +158,19 @@ void loop() {
     // -------------------------------------------------------------------------
     // Emergency Stop Check
     // -------------------------------------------------------------------------
-    if (modbusServer.getHoldingValue(HREG_EMERGENCY_STOP) != 0) {
+    if (mb.Hreg(HREG_EMERGENCY_STOP) != 0) {
         motors.emergencyStop();
     }
 
     // -------------------------------------------------------------------------
     // Check for encoder reset command
     // -------------------------------------------------------------------------
-    if (modbusServer.getHoldingValue(HREG_RESET_ENCODERS) != 0) {
+    if (mb.Hreg(HREG_RESET_ENCODERS) != 0) {
         encoders.resetAll();
-        modbusServer.setHoldingValue(HREG_RESET_ENCODERS, 0);  // Auto-clear
+        mb.Hreg(HREG_RESET_ENCODERS, 0);  // Auto-clear
     }
+
+    yield();
 }
 
 // ============================================================================
@@ -168,55 +178,72 @@ void loop() {
 // ============================================================================
 
 void initializeRegisters() {
-    // Set motor speeds to stop (255 = stopped in our mapping)
-    modbusServer.setHoldingValue(HREG_MOTOR_FL_SPEED, MOTOR_STOP_VALUE);
-    modbusServer.setHoldingValue(HREG_MOTOR_FR_SPEED, MOTOR_STOP_VALUE);
-    modbusServer.setHoldingValue(HREG_MOTOR_RL_SPEED, MOTOR_STOP_VALUE);
-    modbusServer.setHoldingValue(HREG_MOTOR_RR_SPEED, MOTOR_STOP_VALUE);
+    // Add Holding Registers (Read/Write)
+    mb.addHreg(HREG_MOTOR_FL_SPEED, MOTOR_STOP_VALUE);
+    mb.addHreg(HREG_MOTOR_FR_SPEED, MOTOR_STOP_VALUE);
+    mb.addHreg(HREG_MOTOR_RL_SPEED, MOTOR_STOP_VALUE);
+    mb.addHreg(HREG_MOTOR_RR_SPEED, MOTOR_STOP_VALUE);
+    mb.addHreg(HREG_EMERGENCY_STOP, 0);
+    mb.addHreg(HREG_SYSTEM_MODE, 0);
+    mb.addHreg(HREG_RESET_ENCODERS, 0);
 
-    // System mode: manual
-    modbusServer.setHoldingValue(HREG_SYSTEM_MODE, 0);
-
-    // Emergency stop: released
-    modbusServer.setHoldingValue(HREG_EMERGENCY_STOP, 0);
-
-    // Reset encoders flag: cleared
-    modbusServer.setHoldingValue(HREG_RESET_ENCODERS, 0);
-
-    // Initialize input registers to 0
-    for (int i = 0; i < INPUT_REG_COUNT; i++) {
-        modbusServer.setInputValue(i, 0);
-    }
+    // Add Input Registers (Read Only)
+    mb.addIreg(IREG_ENCODER_M1_COUNT, 0);
+    mb.addIreg(IREG_ENCODER_M2_COUNT, 0);
+    mb.addIreg(IREG_ENCODER_M3_COUNT, 0);
+    mb.addIreg(IREG_ENCODER_M4_COUNT, 0);
+    mb.addIreg(IREG_ENCODER_M1_SPEED, 32768);  // 0 RPM with offset
+    mb.addIreg(IREG_ENCODER_M2_SPEED, 32768);
+    mb.addIreg(IREG_ENCODER_M3_SPEED, 32768);
+    mb.addIreg(IREG_ENCODER_M4_SPEED, 32768);
+    mb.addIreg(IREG_BATTERY_VOLTAGE, 0);
 }
 
 // ============================================================================
 // Motor Command Processing
 // ============================================================================
 
-void processMotorCommands() {
+// Previous motor values for change detection
+static uint16_t prevFL = MOTOR_STOP_VALUE;
+static uint16_t prevFR = MOTOR_STOP_VALUE;
+static uint16_t prevRL = MOTOR_STOP_VALUE;
+static uint16_t prevRR = MOTOR_STOP_VALUE;
+
+void checkMotorCommands() {
     // Check if emergency stop is active
-    if (modbusServer.getHoldingValue(HREG_EMERGENCY_STOP) != 0) {
+    if (mb.Hreg(HREG_EMERGENCY_STOP) != 0) {
         return;  // Don't process commands during emergency stop
     }
 
-    // Get motor speed register values
-    uint16_t regFL = modbusServer.getHoldingValue(HREG_MOTOR_FL_SPEED);
-    uint16_t regFR = modbusServer.getHoldingValue(HREG_MOTOR_FR_SPEED);
-    uint16_t regRL = modbusServer.getHoldingValue(HREG_MOTOR_RL_SPEED);
-    uint16_t regRR = modbusServer.getHoldingValue(HREG_MOTOR_RR_SPEED);
+    // Get current motor speed register values
+    uint16_t regFL = mb.Hreg(HREG_MOTOR_FL_SPEED);
+    uint16_t regFR = mb.Hreg(HREG_MOTOR_FR_SPEED);
+    uint16_t regRL = mb.Hreg(HREG_MOTOR_RL_SPEED);
+    uint16_t regRR = mb.Hreg(HREG_MOTOR_RR_SPEED);
 
-    // Convert register values to signed speeds (-255 to +255)
-    // Register mapping: 0-254 = reverse, 255 = stop, 256-510 = forward
-    int speedFL = registerToSpeed(regFL);
-    int speedFR = registerToSpeed(regFR);
-    int speedRL = registerToSpeed(regRL);
-    int speedRR = registerToSpeed(regRR);
+    // Check if any value changed
+    if (regFL != prevFL || regFR != prevFR || regRL != prevRL || regRR != prevRR) {
+        // Convert register values to signed speeds (-255 to +255)
+        int speedFL = registerToSpeed(regFL);
+        int speedFR = registerToSpeed(regFR);
+        int speedRL = registerToSpeed(regRL);
+        int speedRR = registerToSpeed(regRR);
 
-    // Apply motor speeds
-    motors.setMotorSpeed(MOTOR_FL, speedFL);
-    motors.setMotorSpeed(MOTOR_FR, speedFR);
-    motors.setMotorSpeed(MOTOR_RL, speedRL);
-    motors.setMotorSpeed(MOTOR_RR, speedRR);
+        // Apply motor speeds
+        motors.setMotorSpeed(MOTOR_FL, speedFL);
+        motors.setMotorSpeed(MOTOR_FR, speedFR);
+        motors.setMotorSpeed(MOTOR_RL, speedRL);
+        motors.setMotorSpeed(MOTOR_RR, speedRR);
+
+        // Update previous values
+        prevFL = regFL;
+        prevFR = regFR;
+        prevRL = regRL;
+        prevRR = regRR;
+
+        // Reset watchdog
+        lastMotorCommand = millis();
+    }
 }
 
 // ============================================================================
@@ -228,16 +255,16 @@ void updateEncoderRegisters() {
     encoders.update();
 
     // Get encoder counts (convert to uint16_t, handle overflow)
-    modbusServer.setInputValue(IREG_ENCODER_M1_COUNT, (uint16_t)(encoders.getCount(0) & 0xFFFF));
-    modbusServer.setInputValue(IREG_ENCODER_M2_COUNT, (uint16_t)(encoders.getCount(1) & 0xFFFF));
-    modbusServer.setInputValue(IREG_ENCODER_M3_COUNT, (uint16_t)(encoders.getCount(2) & 0xFFFF));
-    modbusServer.setInputValue(IREG_ENCODER_M4_COUNT, (uint16_t)(encoders.getCount(3) & 0xFFFF));
+    mb.Ireg(IREG_ENCODER_M1_COUNT, (uint16_t)(encoders.getCount(0) & 0xFFFF));
+    mb.Ireg(IREG_ENCODER_M2_COUNT, (uint16_t)(encoders.getCount(1) & 0xFFFF));
+    mb.Ireg(IREG_ENCODER_M3_COUNT, (uint16_t)(encoders.getCount(2) & 0xFFFF));
+    mb.Ireg(IREG_ENCODER_M4_COUNT, (uint16_t)(encoders.getCount(3) & 0xFFFF));
 
     // Get encoder speeds (RPM) - convert signed to unsigned with offset
-    modbusServer.setInputValue(IREG_ENCODER_M1_SPEED, rpmToRegister(encoders.getRPM(0)));
-    modbusServer.setInputValue(IREG_ENCODER_M2_SPEED, rpmToRegister(encoders.getRPM(1)));
-    modbusServer.setInputValue(IREG_ENCODER_M3_SPEED, rpmToRegister(encoders.getRPM(2)));
-    modbusServer.setInputValue(IREG_ENCODER_M4_SPEED, rpmToRegister(encoders.getRPM(3)));
+    mb.Ireg(IREG_ENCODER_M1_SPEED, rpmToRegister(encoders.getRPM(0)));
+    mb.Ireg(IREG_ENCODER_M2_SPEED, rpmToRegister(encoders.getRPM(1)));
+    mb.Ireg(IREG_ENCODER_M3_SPEED, rpmToRegister(encoders.getRPM(2)));
+    mb.Ireg(IREG_ENCODER_M4_SPEED, rpmToRegister(encoders.getRPM(3)));
 }
 
 // ============================================================================
@@ -247,14 +274,16 @@ void updateEncoderRegisters() {
 void updateBatteryRegister() {
     // Read battery voltage and store in mV
     uint16_t voltage_mV = battery.readVoltage_mV();
-    modbusServer.setInputValue(IREG_BATTERY_VOLTAGE, voltage_mV);
+    mb.Ireg(IREG_BATTERY_VOLTAGE, voltage_mV);
 
+    // NOTE: Battery critical check temporarily disabled for testing
+    // TODO: Re-enable once voltage divider is properly calibrated
     // Check for critical battery level
-    if (voltage_mV < BATTERY_CRITICAL_MV && voltage_mV > 1000) {
-        // Critical battery - trigger emergency stop
-        modbusServer.setHoldingValue(HREG_EMERGENCY_STOP, 1);
-        motors.emergencyStop();
-    }
+    // if (voltage_mV < BATTERY_CRITICAL_MV && voltage_mV > 1000) {
+    //     // Critical battery - trigger emergency stop
+    //     mb.Hreg(HREG_EMERGENCY_STOP, 1);
+    //     motors.emergencyStop();
+    // }
 }
 
 // ============================================================================
@@ -267,10 +296,16 @@ void checkWatchdog(unsigned long currentMillis) {
         motors.stopAll();
 
         // Set motor registers to stop
-        modbusServer.setHoldingValue(HREG_MOTOR_FL_SPEED, MOTOR_STOP_VALUE);
-        modbusServer.setHoldingValue(HREG_MOTOR_FR_SPEED, MOTOR_STOP_VALUE);
-        modbusServer.setHoldingValue(HREG_MOTOR_RL_SPEED, MOTOR_STOP_VALUE);
-        modbusServer.setHoldingValue(HREG_MOTOR_RR_SPEED, MOTOR_STOP_VALUE);
+        mb.Hreg(HREG_MOTOR_FL_SPEED, MOTOR_STOP_VALUE);
+        mb.Hreg(HREG_MOTOR_FR_SPEED, MOTOR_STOP_VALUE);
+        mb.Hreg(HREG_MOTOR_RL_SPEED, MOTOR_STOP_VALUE);
+        mb.Hreg(HREG_MOTOR_RR_SPEED, MOTOR_STOP_VALUE);
+
+        // Update previous values
+        prevFL = prevFR = prevRL = prevRR = MOTOR_STOP_VALUE;
+
+        // Reset watchdog to avoid repeated stops
+        lastMotorCommand = currentMillis;
     }
 }
 

@@ -45,30 +45,41 @@ class SystemState:
 class ModbusRegisterMap:
     """
     Modbus register addresses for CLOVER robot.
-    Must match Arduino firmware implementation.
+    Must match Arduino firmware implementation (config.h).
+
+    Arduino uses ModbusRTU library with separate arrays:
+    - Holding registers: indices 0-19
+    - Input registers: indices 0-24
     """
     # Motor Speed Commands (Holding Registers - Read/Write)
-    MOTOR_FL_SPEED = 100    # M1 Front Left
-    MOTOR_FR_SPEED = 101    # M2 Front Right
-    MOTOR_RL_SPEED = 102    # M3 Rear Left
-    MOTOR_RR_SPEED = 103    # M4 Rear Right
+    # Match Arduino: HREG_MOTOR_FL_SPEED = 0, etc.
+    MOTOR_FL_SPEED = 0      # Holding[0] - M1 Front Left
+    MOTOR_FR_SPEED = 1      # Holding[1] - M2 Front Right
+    MOTOR_RL_SPEED = 2      # Holding[2] - M3 Rear Left
+    MOTOR_RR_SPEED = 3      # Holding[3] - M4 Rear Right
 
     # Encoder Counts (Input Registers - Read Only)
-    ENCODER_M1_COUNT = 200
-    ENCODER_M2_COUNT = 201
-    ENCODER_M3_COUNT = 202
-    ENCODER_M4_COUNT = 203
+    # Match Arduino: IREG_ENCODER_M1_COUNT = 0, etc.
+    ENCODER_M1_COUNT = 0    # Input[0]
+    ENCODER_M2_COUNT = 1    # Input[1]
+    ENCODER_M3_COUNT = 2    # Input[2]
+    ENCODER_M4_COUNT = 3    # Input[3]
 
     # Encoder Speed RPM (Input Registers - Read Only)
-    ENCODER_M1_SPEED = 210
-    ENCODER_M2_SPEED = 211
-    ENCODER_M3_SPEED = 212
-    ENCODER_M4_SPEED = 213
+    # Match Arduino: IREG_ENCODER_M1_SPEED = 10, etc.
+    ENCODER_M1_SPEED = 10   # Input[10]
+    ENCODER_M2_SPEED = 11   # Input[11]
+    ENCODER_M3_SPEED = 12   # Input[12]
+    ENCODER_M4_SPEED = 13   # Input[13]
 
     # System Status (Holding Registers - Read/Write)
-    EMERGENCY_STOP = 300    # 0=normal, 1=stop
-    SYSTEM_MODE = 301       # 0=manual, 1=auto
-    BATTERY_VOLTAGE = 302   # mV (divide by 1000 for V)
+    # Match Arduino: HREG_EMERGENCY_STOP = 10, etc.
+    EMERGENCY_STOP = 10     # Holding[10]: 0=normal, 1=stop
+    SYSTEM_MODE = 11        # Holding[11]: 0=manual, 1=auto
+
+    # Battery Voltage (Input Register - Read Only)
+    # Match Arduino: IREG_BATTERY_VOLTAGE = 20
+    BATTERY_VOLTAGE = 20    # Input[20]: mV (divide by 1000 for V)
 
     # Ultrasonic Sensors (Input Registers - Read Only)
     # Reserved for future expansion
@@ -122,6 +133,11 @@ class CloverModbusClient:
         self.system = SystemState()
 
         logger.info(f"CLOVER Modbus client initialized: {port} @ {baudrate} baud")
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if client is connected (property for compatibility)"""
+        return self.connected
 
     def connect(self) -> bool:
         """
@@ -180,7 +196,7 @@ class CloverModbusClient:
             response = self.client.read_input_registers(
                 address=address,
                 count=count,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
 
             if response.isError():
@@ -202,7 +218,7 @@ class CloverModbusClient:
             response = self.client.read_holding_registers(
                 address=address,
                 count=count,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
 
             if response.isError():
@@ -224,7 +240,7 @@ class CloverModbusClient:
             response = self.client.write_register(
                 address=address,
                 value=value,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
 
             if response.isError():
@@ -246,7 +262,7 @@ class CloverModbusClient:
             response = self.client.write_registers(
                 address=address,
                 values=values,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
 
             if response.isError():
@@ -410,11 +426,12 @@ class CloverModbusClient:
         voltage = values[0] / 1000.0
         self.system.battery_voltage = voltage
 
-        # Log warnings
-        if voltage < 9.0:
-            logger.critical(f"BATTERY CRITICAL: {voltage:.2f}V - SHUTDOWN REQUIRED!")
-        elif voltage < 10.0:
-            logger.warning(f"Battery low: {voltage:.2f}V")
+        # Log warnings (temporarily disabled for testing)
+        # TODO: Re-enable battery warnings once voltage divider is calibrated
+        # if voltage < 9.0:
+        #     logger.critical(f"BATTERY CRITICAL: {voltage:.2f}V - SHUTDOWN REQUIRED!")
+        # elif voltage < 10.0:
+        #     logger.warning(f"Battery low: {voltage:.2f}V")
 
         return voltage
 

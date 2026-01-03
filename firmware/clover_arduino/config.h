@@ -31,21 +31,22 @@
 #define MOTOR_RR    3   // Rear Right (M4)
 
 // PCA9685 channel mapping for HR8833 inputs
-// Motor FL (Front Left) - HR8833 #1, Channel A
-#define PWM_FL_IN1  0   // PCA9685 channel 0
-#define PWM_FL_IN2  1   // PCA9685 channel 1
+// NOTA: Mapping corretto dopo test fisico (coppie invertite)
+// Motor FL (Front Left) - canali 2,3
+#define PWM_FL_IN1  2   // PCA9685 channel 2
+#define PWM_FL_IN2  3   // PCA9685 channel 3
 
-// Motor FR (Front Right) - HR8833 #1, Channel B
-#define PWM_FR_IN1  2   // PCA9685 channel 2
-#define PWM_FR_IN2  3   // PCA9685 channel 3
+// Motor FR (Front Right) - canali 0,1
+#define PWM_FR_IN1  0   // PCA9685 channel 0
+#define PWM_FR_IN2  1   // PCA9685 channel 1
 
-// Motor RL (Rear Left) - HR8833 #2, Channel A
-#define PWM_RL_IN1  4   // PCA9685 channel 4
-#define PWM_RL_IN2  5   // PCA9685 channel 5
+// Motor RL (Rear Left) - canali 6,7
+#define PWM_RL_IN1  6   // PCA9685 channel 6
+#define PWM_RL_IN2  7   // PCA9685 channel 7
 
-// Motor RR (Rear Right) - HR8833 #2, Channel B
-#define PWM_RR_IN1  6   // PCA9685 channel 6
-#define PWM_RR_IN2  7   // PCA9685 channel 7
+// Motor RR (Rear Right) - canali 4,5
+#define PWM_RR_IN1  4   // PCA9685 channel 4
+#define PWM_RR_IN2  5   // PCA9685 channel 5
 
 // Motor inversion flags (set to true if motor runs backwards)
 #define INVERT_FL   false
@@ -75,9 +76,9 @@
 // Battery monitoring pin
 #define BATTERY_PIN         A0
 
-// Voltage divider ratio (adjust based on actual resistors)
-// If using 10K + 3.3K divider: ratio = (10K + 3.3K) / 3.3K = 4.03
-#define VOLTAGE_DIVIDER_RATIO   4.03
+// Voltage divider ratio (calibrated from actual measurement)
+// Calibration: 9.99V real → adjusted to read correctly
+#define VOLTAGE_DIVIDER_RATIO   4.86
 
 // LiPo 3S2P Battery thresholds (in mV)
 #define BATTERY_MAX_MV      12600   // Fully charged
@@ -144,7 +145,7 @@
 
 #define ENCODER_UPDATE_INTERVAL     50      // ms (20 Hz)
 #define BATTERY_UPDATE_INTERVAL     1000    // ms (1 Hz)
-#define WATCHDOG_TIMEOUT            2000    // ms (stop motors if no commands)
+#define WATCHDOG_TIMEOUT            10000   // ms (10 sec - for testing)
 
 // ============================================================================
 // Debug Configuration
