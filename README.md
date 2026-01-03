@@ -21,7 +21,9 @@ Il progetto CLOVER è una piattaforma robotica mobile omnidirezionale basata su 
 - Shield: Moebius 4CH Motor Driver
 - PWM Controller: PCA9685 (I2C @ 0x40)
 - H-Bridge: HR8833 (Dual)
-- Comunicazione: Modbus RTU via USB
+- Comunicazione: Modbus RTU via USB (porta `/dev/ttyACM0`)
+
+> **ATTENZIONE**: La Moebius Shield ha DUE morsettiere separate. Collegare la batteria 11.1V SOLO a "Supply Power" (sinistra). NON collegare mai la batteria a "Servo Power" (destra). Vedi [firmware/clover_arduino/README.md](firmware/clover_arduino/README.md) per dettagli.
 
 ### Chassis
 - **Dimensioni**: 300 x 250 mm

@@ -11,6 +11,63 @@ Firmware per Arduino Uno che gestisce il controllo motori e la comunicazione Mod
 - **Motori**: JGB 520 (12V DC, 330 RPM, encoder Hall)
 - **Batteria**: LiPo 3S2P (11.1V nominale)
 
+## Alimentazione Moebius Shield
+
+La Moebius Shield ha **DUE morsettiere di alimentazione separate**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      MOEBIUS SHIELD                             │
+│                                                                 │
+│  [Supply Power]              [Servo Power]                      │
+│   + | -                       + | -                             │
+│   │   │                       │   │                             │
+│   │   └── GND Batteria        │   └── GND (se servo separati)   │
+│   └────── +11.1V Batteria     └────── +5-8.4V (se servo usati)  │
+│                                                                 │
+│            MOTORI                      SERVO                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Morsettiera Supply Power (SINISTRA) - Per MOTORI
+| Pin | Collegamento |
+|-----|--------------|
+| + | Positivo batteria LiPo 3S (11.1V) |
+| - | Negativo batteria (GND) |
+
+### Morsettiera Servo Power (DESTRA) - Per SERVO (opzionale)
+| Pin | Collegamento |
+|-----|--------------|
+| + | Alimentazione servo 5-8.4V (se usati) |
+| - | GND |
+
+### Jumper 5V - VCC50 - VM (Alimentazione Servo)
+
+Sulla scheda è presente un jumper a 3 pin per selezionare l'alimentazione dei servo:
+
+```
+    5V    VCC50    VM
+    [ ]────[ ]────[ ]
+         ▲
+    Jumper qui
+```
+
+| Posizione Jumper | Effetto |
+|------------------|---------|
+| **5V - VCC50** | Servo alimentati da 5V Arduino (CONSIGLIATO) |
+| **VCC50 - VM** | Servo alimentati da VM (tensione esterna) |
+
+### ATTENZIONE - Errore da evitare
+
+**NON collegare MAI la batteria 11.1V alla morsettiera "Servo Power"!**
+
+Se il jumper è su VCC50-VM e si collega alta tensione a "Servo Power":
+```
+Servo Power 11.1V → VM → jumper → VCC50 → 5V Arduino → USB Host = DANNO!
+```
+
+Questo errore può bruciare l'Arduino e le porte USB del dispositivo host (Jetson).
+
 ## Pin Mapping
 
 | Pin | Funzione | Descrizione |
