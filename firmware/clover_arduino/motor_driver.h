@@ -22,6 +22,8 @@ struct MotorChannel {
     uint8_t in2_channel;    // PCA9685 channel for IN2
     bool inverted;          // Motor direction inversion
     int16_t currentSpeed;   // Current speed (-255 to +255)
+    int8_t pwmOffset;       // PWM calibration offset (-50 to +50)
+    uint8_t pwmScale;       // PWM scale factor (percentage, 100 = normal)
 };
 
 // ============================================================================
@@ -78,24 +80,32 @@ MotorDriver::MotorDriver(Adafruit_PWMServoDriver* pwmDriver) {
     _motors[MOTOR_FL].in2_channel = PWM_FL_IN2;
     _motors[MOTOR_FL].inverted = INVERT_FL;
     _motors[MOTOR_FL].currentSpeed = 0;
+    _motors[MOTOR_FL].pwmOffset = PWM_OFFSET_FL;
+    _motors[MOTOR_FL].pwmScale = PWM_SCALE_FL;
 
     // Motor FR (Front Right)
     _motors[MOTOR_FR].in1_channel = PWM_FR_IN1;
     _motors[MOTOR_FR].in2_channel = PWM_FR_IN2;
     _motors[MOTOR_FR].inverted = INVERT_FR;
     _motors[MOTOR_FR].currentSpeed = 0;
+    _motors[MOTOR_FR].pwmOffset = PWM_OFFSET_FR;
+    _motors[MOTOR_FR].pwmScale = PWM_SCALE_FR;
 
     // Motor RL (Rear Left)
     _motors[MOTOR_RL].in1_channel = PWM_RL_IN1;
     _motors[MOTOR_RL].in2_channel = PWM_RL_IN2;
     _motors[MOTOR_RL].inverted = INVERT_RL;
     _motors[MOTOR_RL].currentSpeed = 0;
+    _motors[MOTOR_RL].pwmOffset = PWM_OFFSET_RL;
+    _motors[MOTOR_RL].pwmScale = PWM_SCALE_RL;
 
     // Motor RR (Rear Right)
     _motors[MOTOR_RR].in1_channel = PWM_RR_IN1;
     _motors[MOTOR_RR].in2_channel = PWM_RR_IN2;
     _motors[MOTOR_RR].inverted = INVERT_RR;
     _motors[MOTOR_RR].currentSpeed = 0;
+    _motors[MOTOR_RR].pwmOffset = PWM_OFFSET_RR;
+    _motors[MOTOR_RR].pwmScale = PWM_SCALE_RR;
 }
 
 void MotorDriver::begin() {
@@ -195,14 +205,24 @@ void MotorDriver::applyMotorOutput(uint8_t motorIndex, int16_t speed) {
         _pwm->setPWM(in2, 0, 0);
     }
     else if (speed > 0) {
+        // Apply calibration: scale then offset
+        int16_t calibrated = ((int32_t)speed * _motors[motorIndex].pwmScale) / 100;
+        calibrated += _motors[motorIndex].pwmOffset;
+        calibrated = constrain(calibrated, 0, 255);
+
         // Forward: IN1 = PWM, IN2 = LOW (fast decay)
-        uint16_t pwmValue = speedToPWM(speed);
+        uint16_t pwmValue = speedToPWM(calibrated);
         _pwm->setPWM(in1, 0, pwmValue);
         _pwm->setPWM(in2, 0, 0);
     }
     else {
+        // Apply calibration: scale then offset
+        int16_t calibrated = ((int32_t)(-speed) * _motors[motorIndex].pwmScale) / 100;
+        calibrated += _motors[motorIndex].pwmOffset;
+        calibrated = constrain(calibrated, 0, 255);
+
         // Reverse: IN1 = LOW, IN2 = PWM (fast decay)
-        uint16_t pwmValue = speedToPWM(-speed);
+        uint16_t pwmValue = speedToPWM(calibrated);
         _pwm->setPWM(in1, 0, 0);
         _pwm->setPWM(in2, 0, pwmValue);
     }
