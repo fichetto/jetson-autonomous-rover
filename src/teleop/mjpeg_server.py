@@ -6,12 +6,43 @@ Works with any browser, no WebRTC required
 
 import asyncio
 import cv2
+import numpy as np
 import time
+import os
 from aiohttp import web
 from loguru import logger
 
 import sys
 sys.path.insert(0, '/home/jetsonnano/autonomous-rover')
+
+# Cat detector (caricato SOLO su richiesta esplicita, non all'avvio)
+_cat_detector = None
+_cat_detector_loaded = False
+
+def get_cat_detector():
+    """Carica YOLO solo quando esplicitamente richiesto"""
+    global _cat_detector, _cat_detector_loaded
+    if _cat_detector_loaded:
+        return _cat_detector
+    # Non caricare automaticamente - troppo pesante
+    return None
+
+def load_cat_detector():
+    """Carica esplicitamente il detector (chiamare solo se necessario)"""
+    global _cat_detector, _cat_detector_loaded
+    if _cat_detector_loaded:
+        return _cat_detector
+    try:
+        from ultralytics import YOLO
+        model_path = "/home/jetsonnano/autonomous-rover/models/yolo11n.engine"
+        if os.path.exists(model_path):
+            _cat_detector = YOLO(model_path)
+            logger.success(f"Cat detector loaded: {model_path}")
+        _cat_detector_loaded = True
+    except Exception as e:
+        logger.warning(f"Cat detector not available: {e}")
+        _cat_detector_loaded = True
+    return _cat_detector
 
 
 class MJPEGServer:
@@ -34,6 +65,11 @@ class MJPEGServer:
         self.cameras = []
         self.running = False
 
+        # Cat detection (disattivata di default)
+        self.detection_enabled = False
+        self.last_detections = []
+        self.frame_count = 0
+
         self._setup_routes()
 
     def _setup_routes(self):
@@ -43,6 +79,8 @@ class MJPEGServer:
         self.app.router.add_get("/stream/right", self._handle_stream_right)
         self.app.router.add_get("/snapshot", self._handle_snapshot)
         self.app.router.add_get("/health", self._handle_health)
+        self.app.router.add_post("/detection/toggle", self._handle_detection_toggle)
+        self.app.router.add_get("/detection/status", self._handle_detection_status)
         self.app.router.add_static("/static",
             "/home/jetsonnano/autonomous-rover/src/teleop/static")
 
@@ -50,10 +88,10 @@ class MJPEGServer:
         """GStreamer pipeline for CSI camera"""
         return (
             f"nvarguscamerasrc sensor-id={sensor_id} ! "
-            f"video/x-raw(memory:NVMM), width={self.width}, height={self.height}, "
-            f"framerate={self.fps}/1, format=NV12 ! "
-            f"nvvidconv ! video/x-raw, format=BGRx ! "
-            f"videoconvert ! video/x-raw, format=BGR ! "
+            f"video/x-raw(memory:NVMM),width={self.width},height={self.height},"
+            f"framerate={self.fps}/1,format=NV12 ! "
+            f"nvvidconv ! video/x-raw,format=BGRx ! "
+            f"videoconvert ! video/x-raw,format=BGR ! "
             f"appsink drop=1 max-buffers=2"
         )
 
@@ -99,6 +137,14 @@ class MJPEGServer:
                 # Return black frame if camera fails
                 frames.append(np.zeros((self.height, self.width, 3), dtype=np.uint8))
 
+        # Detection sul frame sinistro
+        if self.detection_enabled and len(frames) > 0:
+            self.frame_count += 1
+            if self.frame_count % 2 == 0:  # Ogni 2 frame (più reattivo)
+                frames[0] = self._detect_and_draw(frames[0])
+            else:
+                frames[0] = self._draw_detections(frames[0])
+
         if len(frames) == 2:
             # Side-by-side stereo
             return cv2.hconcat(frames)
@@ -106,6 +152,37 @@ class MJPEGServer:
             return frames[0]
         else:
             return None
+
+    def _detect_and_draw(self, frame):
+        """Run detection and draw boxes"""
+        detector = get_cat_detector()
+        if detector is None:
+            return frame
+        try:
+            results = detector(frame, verbose=False, conf=0.3, imgsz=320)
+            self.last_detections = []
+            for r in results:
+                for box in r.boxes:
+                    if int(box.cls[0]) == 15:  # Cat
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                        conf = float(box.conf[0])
+                        self.last_detections.append((x1, y1, x2, y2, conf))
+        except:
+            pass
+        return self._draw_detections(frame)
+
+    def _draw_detections(self, frame):
+        """Draw detection boxes"""
+        for (x1, y1, x2, y2, conf) in self.last_detections:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, f"Cat {conf:.0%}", (x1, y1-5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        # Status
+        status = f"Cats: {len(self.last_detections)}" if self.detection_enabled else ""
+        if status:
+            cv2.putText(frame, status, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        return frame
 
     def encode_frame(self, frame, quality=None):
         """Encode frame as JPEG"""
@@ -570,14 +647,31 @@ class MJPEGServer:
         return web.json_response({
             "status": "ok",
             "cameras": len(self.cameras),
-            "running": self.running
+            "running": self.running,
+            "detection_enabled": self.detection_enabled,
+            "cats": len(self.last_detections)
+        })
+
+    async def _handle_detection_toggle(self, request):
+        """Toggle cat detection"""
+        self.detection_enabled = not self.detection_enabled
+        if self.detection_enabled:
+            load_cat_detector()  # Carica il modello SOLO quando attivato
+        logger.info(f"Detection {'enabled' if self.detection_enabled else 'disabled'}")
+        return web.json_response({
+            "detection_enabled": self.detection_enabled
+        })
+
+    async def _handle_detection_status(self, request):
+        """Get detection status"""
+        return web.json_response({
+            "enabled": self.detection_enabled,
+            "cats": len(self.last_detections),
+            "detections": [(x1, y1, x2, y2, conf) for x1, y1, x2, y2, conf in self.last_detections]
         })
 
     def run(self):
         """Start server"""
-        import numpy as np  # Import here to avoid startup delay
-        globals()['np'] = np
-
         logger.info("Opening cameras...")
         if not self.open_cameras():
             logger.error("No cameras available!")
@@ -604,9 +698,9 @@ def main():
     parser = argparse.ArgumentParser(description="CLOVER MJPEG Streaming Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8080, help="Port")
-    parser.add_argument("--width", type=int, default=1280, help="Camera width")
-    parser.add_argument("--height", type=int, default=720, help="Camera height")
-    parser.add_argument("--fps", type=int, default=30, help="Framerate")
+    parser.add_argument("--width", type=int, default=640, help="Camera width")
+    parser.add_argument("--height", type=int, default=480, help="Camera height")
+    parser.add_argument("--fps", type=int, default=15, help="Framerate")
     parser.add_argument("--quality", type=int, default=80, help="JPEG quality (1-100)")
 
     args = parser.parse_args()
