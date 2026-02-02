@@ -3,7 +3,7 @@
 Cat Follower for CLOVER Rover
 =============================
 Detects cats and follows them at a specified distance using:
-- YOLOv8n for cat detection (COCO class 15)
+- YOLOv11n for cat detection (COCO class 15)
 - Stereo depth estimation for distance measurement
 - PID-like control for smooth following
 
@@ -52,7 +52,7 @@ class CatDetector:
 
     CAT_CLASS_ID = 15  # COCO class for cat
 
-    def __init__(self, model_path: str = "models/yolov8n.onnx",
+    def __init__(self, model_path: str = "models/yolo11n.pt",
                  conf_threshold: float = 0.5):
         self.model_path = model_path
         self.conf_threshold = conf_threshold
@@ -215,7 +215,7 @@ class CatFollower:
                  target_distance: float = 0.5,  # 50cm
                  distance_tolerance: float = 0.1,  # 10cm
                  angle_tolerance: float = 10.0,  # degrees
-                 max_speed: int = 80,  # ~30% PWM
+                 max_speed: int = 150,  # ~60% PWM (minimum to move rover)
                  camera_fov: float = 62.0):  # IMX219 horizontal FOV
 
         self.target_distance = target_distance
@@ -248,7 +248,7 @@ class CatFollower:
             # Initialize cat detector
             logger.info("Initializing cat detector...")
             self.detector = CatDetector(
-                model_path="/home/jetsonnano/autonomous-rover/models/yolov8n.pt"
+                model_path="/home/jetsonnano/autonomous-rover/models/yolo11n.pt"
             )
 
             # Initialize depth estimator

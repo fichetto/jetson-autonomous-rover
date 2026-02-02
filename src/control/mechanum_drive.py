@@ -30,10 +30,11 @@ class MechanumConfig:
     gear_ratio: int = 30            # Gear reduction
 
     # Motor inversion flags (adjust based on physical wiring)
+    # NOTA: disabilitato per test rotazione
     invert_front_left: bool = False
-    invert_front_right: bool = True
+    invert_front_right: bool = False
     invert_rear_left: bool = False
-    invert_rear_right: bool = True
+    invert_rear_right: bool = False
 
 
 @dataclass
