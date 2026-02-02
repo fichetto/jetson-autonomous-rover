@@ -159,6 +159,11 @@ uint8_t i2cErrorCount = 0;
 uint16_t localMotorRegs[4] = {MOTOR_STOP_VALUE, MOTOR_STOP_VALUE,
                                MOTOR_STOP_VALUE, MOTOR_STOP_VALUE};
 
+// Channel mapping arrays (from config.h)
+const uint8_t motorCh1[4] = {PWM_FL_IN1, PWM_FR_IN1, PWM_RL_IN1, PWM_RR_IN1};
+const uint8_t motorCh2[4] = {PWM_FL_IN2, PWM_FR_IN2, PWM_RL_IN2, PWM_RR_IN2};
+const bool motorInvert[4] = {INVERT_FL, INVERT_FR, INVERT_RL, INVERT_RR};
+
 // Direct motor control in callback (same pattern as working datalogger)
 uint16_t onMotorWrite(TRegister* reg, uint16_t val) {
     uint16_t address = reg->address.address;
@@ -170,12 +175,12 @@ uint16_t onMotorWrite(TRegister* reg, uint16_t val) {
         // Convert to speed (-255 to +255)
         int16_t speed = (int16_t)val - 255;
 
-        // Calculate PWM channels for this motor
-        uint8_t ch1 = address * 2;
-        uint8_t ch2 = address * 2 + 1;
+        // Get PWM channels from config
+        uint8_t ch1 = motorCh1[address];
+        uint8_t ch2 = motorCh2[address];
 
-        // Apply motor direction inversion for right side
-        if (address == 1 || address == 3) {  // FR or RR
+        // Apply motor direction inversion from config
+        if (motorInvert[address]) {
             speed = -speed;
         }
 
@@ -539,8 +544,8 @@ void checkWatchdog() {
     if (now - lastMotorCommand >= WATCHDOG_TIMEOUT) {
         // Stop motors using direct PWM (same as callback does)
         for (uint8_t i = 0; i < 4; i++) {
-            uint8_t ch1 = i * 2;
-            uint8_t ch2 = i * 2 + 1;
+            uint8_t ch1 = motorCh1[i];
+            uint8_t ch2 = motorCh2[i];
             pwm.setPWM(ch1, 0, 0);
             pwm.setPWM(ch2, 0, 0);
             localMotorRegs[i] = MOTOR_STOP_VALUE;

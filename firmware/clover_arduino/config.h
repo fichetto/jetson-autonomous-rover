@@ -33,28 +33,29 @@
 // PCA9685 channel mapping for HR8833 inputs
 // Mapping da schema Moebius ARDUINO_HR8833.pdf
 // M1=JP1 (canali 0,1), M2=JP2 (canali 2,3), M3=JP3 (canali 4,5), M4=JP4 (canali 6,7)
+// NOTA: L e R scambiati fisicamente, quindi FL usa JP2 e FR usa JP1, ecc.
 
-// Motor M1/FL (Front Left) - JP1 - canali 0,1
-#define PWM_FL_IN1  0   // PCA9685 channel 0 (LED0)
-#define PWM_FL_IN2  1   // PCA9685 channel 1 (LED1)
+// Motor FL (Front Left) - fisicamente su JP2 - canali 2,3
+#define PWM_FL_IN1  2   // PCA9685 channel 2 (LED2)
+#define PWM_FL_IN2  3   // PCA9685 channel 3 (LED3)
 
-// Motor M2/FR (Front Right) - JP2 - canali 2,3
-#define PWM_FR_IN1  2   // PCA9685 channel 2 (LED2)
-#define PWM_FR_IN2  3   // PCA9685 channel 3 (LED3)
+// Motor FR (Front Right) - fisicamente su JP1 - canali 0,1
+#define PWM_FR_IN1  0   // PCA9685 channel 0 (LED0)
+#define PWM_FR_IN2  1   // PCA9685 channel 1 (LED1)
 
-// Motor M3/RL (Rear Left) - JP3 - canali 4,5
-#define PWM_RL_IN1  4   // PCA9685 channel 4 (LED4)
-#define PWM_RL_IN2  5   // PCA9685 channel 5 (LED5)
+// Motor RL (Rear Left) - fisicamente su JP4 - canali 6,7
+#define PWM_RL_IN1  6   // PCA9685 channel 6 (LED6)
+#define PWM_RL_IN2  7   // PCA9685 channel 7 (LED7)
 
-// Motor M4/RR (Rear Right) - JP4 - canali 6,7
-#define PWM_RR_IN1  6   // PCA9685 channel 6 (LED6)
-#define PWM_RR_IN2  7   // PCA9685 channel 7 (LED7)
+// Motor RR (Rear Right) - fisicamente su JP3 - canali 4,5
+#define PWM_RR_IN1  4   // PCA9685 channel 4 (LED4)
+#define PWM_RR_IN2  5   // PCA9685 channel 5 (LED5)
 
 // Motor inversion flags (set to true if motor runs backwards)
-#define INVERT_FL   false
-#define INVERT_FR   true    // Right side typically inverted
-#define INVERT_RL   false
-#define INVERT_RR   true    // Right side typically inverted
+#define INVERT_FL   true    // Left side now on right-side driver
+#define INVERT_FR   false   // Right side now on left-side driver
+#define INVERT_RL   true    // Left side now on right-side driver
+#define INVERT_RR   false   // Right side now on left-side driver
 
 // ============================================================================
 // Motor PWM Calibration (Open-Loop Speed Matching)
