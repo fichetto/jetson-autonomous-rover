@@ -35,6 +35,79 @@ try:
 except ImportError:
     from stereo_depth import StereoDepthEstimator, StereoCalibration
 
+# Import robust motor controller
+try:
+    from ..control.modbus_motors import RobustModbusController
+except ImportError:
+    import sys
+    sys.path.insert(0, '/home/jetsonnano/autonomous-rover')
+    from src.control.modbus_motors import RobustModbusController
+
+
+class PIDController:
+    """
+    Simple PID controller for smooth distance/angle control.
+    """
+    def __init__(self, kp: float, ki: float, kd: float,
+                 output_min: float = -255, output_max: float = 255,
+                 integral_max: float = 100):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.output_min = output_min
+        self.output_max = output_max
+        self.integral_max = integral_max
+
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = time.time()
+
+    def reset(self):
+        """Reset controller state"""
+        self.integral = 0.0
+        self.last_error = 0.0
+        self.last_time = time.time()
+
+    def update(self, error: float) -> float:
+        """
+        Update PID controller with new error.
+
+        Args:
+            error: Current error (setpoint - measured)
+
+        Returns:
+            Control output
+        """
+        current_time = time.time()
+        dt = current_time - self.last_time
+
+        if dt <= 0:
+            dt = 0.01  # Minimum dt
+
+        # Proportional
+        p_term = self.kp * error
+
+        # Integral (with anti-windup)
+        self.integral += error * dt
+        self.integral = max(-self.integral_max, min(self.integral_max, self.integral))
+        i_term = self.ki * self.integral
+
+        # Derivative
+        derivative = (error - self.last_error) / dt
+        d_term = self.kd * derivative
+
+        # Total output
+        output = p_term + i_term + d_term
+
+        # Clamp output
+        output = max(self.output_min, min(self.output_max, output))
+
+        # Update state
+        self.last_error = error
+        self.last_time = current_time
+
+        return output
+
 
 @dataclass
 class CatDetection:
@@ -48,17 +121,74 @@ class CatDetection:
 
 
 class CatDetector:
-    """YOLOv8 cat detector"""
+    """YOLOv8 cat detector with image preprocessing for low light"""
 
     CAT_CLASS_ID = 15  # COCO class for cat
 
     def __init__(self, model_path: str = "models/yolo11n.pt",
-                 conf_threshold: float = 0.5):
+                 conf_threshold: float = 0.4,  # Lowered for better detection
+                 enhance_image: bool = True,
+                 debug_dir: str = None):
         self.model_path = model_path
         self.conf_threshold = conf_threshold
+        self.enhance_image = enhance_image
         self.model = None
+        self.debug_dir = debug_dir
+        self._debug_frame_count = 0
+
+        # CLAHE for contrast enhancement (works great in low light)
+        # Higher clipLimit = more contrast, but can cause noise
+        self.clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+
+        if self.enhance_image:
+            logger.info("CLAHE image enhancement ENABLED (clipLimit=3.0)")
+        else:
+            logger.info("CLAHE image enhancement DISABLED")
 
         self._load_model()
+
+    def preprocess_image(self, image: np.ndarray, save_debug: bool = False) -> np.ndarray:
+        """
+        Enhance image for better detection in low light.
+
+        Uses CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        on the luminance channel to improve contrast without oversaturating.
+        """
+        if not self.enhance_image:
+            return image
+
+        # Convert to LAB color space
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+
+        # Split channels
+        l, a, b = cv2.split(lab)
+
+        # Apply CLAHE to L channel (luminance)
+        l_enhanced = self.clahe.apply(l)
+
+        # Merge back
+        lab_enhanced = cv2.merge([l_enhanced, a, b])
+
+        # Convert back to BGR
+        enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+
+        # Save debug comparison periodically
+        self._debug_frame_count += 1
+        if save_debug or (self.debug_dir and self._debug_frame_count % 100 == 1):
+            try:
+                from pathlib import Path
+                debug_path = Path(self.debug_dir) if self.debug_dir else Path("/tmp")
+                debug_path.mkdir(exist_ok=True)
+                # Side-by-side comparison
+                comparison = np.hstack([image, enhanced])
+                cv2.putText(comparison, "Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(comparison, "CLAHE Enhanced", (image.shape[1] + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.imwrite(str(debug_path / "clahe_comparison.jpg"), comparison)
+                logger.debug(f"Saved CLAHE comparison to {debug_path / 'clahe_comparison.jpg'}")
+            except Exception as e:
+                logger.warning(f"Could not save debug image: {e}")
+
+        return enhanced
 
     def _load_model(self):
         """Load YOLO model"""
@@ -75,7 +205,7 @@ class CatDetector:
 
     def detect_cats(self, image: np.ndarray) -> List[dict]:
         """
-        Detect cats in image
+        Detect cats in image with preprocessing for low light.
 
         Args:
             image: BGR image
@@ -87,21 +217,38 @@ class CatDetector:
             return []
 
         try:
-            # Run inference
-            results = self.model(image, verbose=False, conf=self.conf_threshold)
+            # Preprocess image for better detection
+            enhanced = self.preprocess_image(image)
+
+            # Run inference on enhanced image
+            results = self.model(enhanced, verbose=False, conf=self.conf_threshold)
 
             cats = []
+            all_detections = []  # For debug logging
+            # COCO class names for common indoor objects
+            COCO_NAMES = {0: 'person', 15: 'cat', 16: 'dog', 17: 'horse',
+                          56: 'chair', 57: 'couch', 58: 'potted_plant', 59: 'bed',
+                          60: 'dining_table', 62: 'tv', 63: 'laptop', 67: 'cell_phone'}
+
             for r in results:
                 boxes = r.boxes
                 for box in boxes:
                     cls = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    class_name = COCO_NAMES.get(cls, f"class_{cls}")
+                    all_detections.append((cls, class_name, conf))
                     if cls == self.CAT_CLASS_ID:
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = float(box.conf[0])
                         cats.append({
                             'bbox': (int(x1), int(y1), int(x2), int(y2)),
                             'confidence': conf
                         })
+                        logger.info(f"CAT detected! conf={conf:.2f}")
+
+            # Log what was detected (periodically)
+            if self._debug_frame_count % 30 == 0 and all_detections:
+                det_str = ", ".join([f"{name}({conf:.2f})" for _, name, conf in all_detections[:5]])
+                logger.debug(f"Detections: {det_str}")
 
             return cats
 
@@ -200,22 +347,34 @@ class ModbusMotorController:
         return self.set_motors(speed, -speed, speed, -speed)
 
 
+class CatFollowerState:
+    """State machine states"""
+    PATROL = "PATROL"      # Searching for cat (rotating)
+    FOLLOW = "FOLLOW"      # Following detected cat
+    IDLE = "IDLE"          # Waiting
+
+
 class CatFollower:
     """
-    Main cat following controller
+    Autonomous cat following controller with patrol behavior
 
-    Uses a simple control strategy:
-    1. Detect cats in frame
-    2. Get distance to closest cat
-    3. Adjust forward/backward to maintain target distance
-    4. Adjust rotation to keep cat centered
+    State Machine:
+    - PATROL: Rotate 360° searching for cats
+    - FOLLOW: Track and follow detected cat, keeping it centered
+    - Returns to PATROL after losing cat for some time
     """
 
+    # Patrol parameters (counter-rotation mode)
+    PATROL_ROTATION_SPEED = 40      # Speed percentage (0-100%)
+    PATROL_SEGMENT_DURATION = 3.0   # Seconds per rotation segment before switching direction
+    PATROL_INTERVAL = 60.0          # Seconds between patrol cycles
+    CAT_LOST_TIMEOUT = 2.0          # Seconds before returning to patrol when cat lost
+
     def __init__(self,
-                 target_distance: float = 0.5,  # 50cm
+                 target_distance: float = 0.6,  # 60cm (small environment)
                  distance_tolerance: float = 0.1,  # 10cm
-                 angle_tolerance: float = 10.0,  # degrees
-                 max_speed: int = 150,  # ~60% PWM (minimum to move rover)
+                 angle_tolerance: float = 5.0,  # degrees (tighter for centering)
+                 max_speed: int = 200,  # Increased for faster response
                  camera_fov: float = 62.0):  # IMX219 horizontal FOV
 
         self.target_distance = target_distance
@@ -227,17 +386,24 @@ class CatFollower:
         # Components
         self.detector: Optional[CatDetector] = None
         self.depth_estimator: Optional[StereoDepthEstimator] = None
-        self.motors: Optional[ModbusMotorController] = None
+        self.motors: Optional[RobustModbusController] = None
 
-        # State
+        # State machine
+        self.state = CatFollowerState.PATROL
+        self.state_start_time = 0.0
+        self.last_cat_seen_time = 0.0
+        self.last_patrol_time = 0.0
+        self.patrol_direction = 1  # 1 = right, -1 = left
+
+        # Running state
         self.running = False
         self.current_cat: Optional[CatDetection] = None
-        self.frame_width = 1280
-        self.frame_height = 720
+        self.frame_width = 640  # Updated for 640x480
+        self.frame_height = 480
 
         # Control gains
-        self.kp_distance = 150  # Forward/back gain
-        self.kp_angle = 2.0     # Rotation gain
+        self.kp_distance = 180  # Forward/back gain (fast approach)
+        self.kp_angle = 4.0     # Rotation gain (smoother steering)
 
         # Obstacle avoidance parameters
         self.obstacle_threshold = 0.4  # Stop if obstacle closer than 40cm
@@ -245,16 +411,47 @@ class CatFollower:
         self.obstacle_detected = False
         self.last_depth_map = None
 
+        # Last command values (percentages, -100 to +100)
+        self.last_forward = 0
+        self.last_rotation = 0
+
+        # PID Controllers for smooth control
+        # Distance PID: aggressive for fast approach
+        self.distance_pid = PIDController(
+            kp=200.0,    # Higher P for faster response
+            ki=15.0,     # Integral gain (reduces steady-state error)
+            kd=40.0,     # Derivative gain (reduces overshoot)
+            output_min=-max_speed,
+            output_max=max_speed,
+            integral_max=60  # Limit integral windup
+        )
+
+        # Angle PID: balanced response (not too jerky)
+        self.angle_pid = PIDController(
+            kp=4.0,      # Reduced for smoother steering
+            ki=0.3,      # Small I
+            kd=1.5,      # D for damping oscillations
+            output_min=-max_speed,
+            output_max=max_speed,
+            integral_max=30
+        )
+
         logger.info(f"CatFollower initialized: target={target_distance}m, "
                    f"tolerance={distance_tolerance}m, obstacle_threshold={self.obstacle_threshold}m")
+        logger.info(f"PID controllers: distance(P={self.distance_pid.kp}), angle(P={self.angle_pid.kp})")
+        logger.info(f"Patrol mode: counter-rotation every {self.PATROL_INTERVAL}s, "
+                   f"speed={self.PATROL_ROTATION_SPEED}%, segment={self.PATROL_SEGMENT_DURATION}s")
 
     def initialize(self, serial_port: str = '/dev/ttyUSB0') -> bool:
         """Initialize all components"""
         try:
-            # Initialize cat detector
-            logger.info("Initializing cat detector...")
+            # Initialize cat detector with CLAHE enhancement
+            logger.info("Initializing cat detector with CLAHE enhancement...")
             self.detector = CatDetector(
-                model_path="/home/jetsonnano/autonomous-rover/models/yolo11n.pt"
+                model_path="/home/jetsonnano/autonomous-rover/models/yolo11n.pt",
+                conf_threshold=0.35,  # Lowered for better detection in poor conditions
+                enhance_image=True,
+                debug_dir="/home/jetsonnano/autonomous-rover/debug_images"
             )
 
             # Initialize depth estimator with REAL calibration
@@ -262,9 +459,9 @@ class CatFollower:
             calibration = StereoCalibration.load_from_file()
             self.depth_estimator = StereoDepthEstimator(calibration)
 
-            # Initialize motor controller
-            logger.info("Initializing motor controller...")
-            self.motors = ModbusMotorController(serial_port)
+            # Initialize robust motor controller (thread-based)
+            logger.info("Initializing motor controller (robust thread-based)...")
+            self.motors = RobustModbusController(serial_port)
             if not self.motors.connect():
                 logger.error("Failed to connect to motors")
                 return False
@@ -441,9 +638,159 @@ class CatFollower:
 
         return forward_speed, rotation_speed
 
+    # ==================== STATE MACHINE ====================
+
+    def change_state(self, new_state: str):
+        """Transition to a new state"""
+        if new_state != self.state:
+            logger.info(f"State: {self.state} -> {new_state}")
+            self.state = new_state
+            self.state_start_time = time.time()
+            # Reset PID controllers on state change
+            self.distance_pid.reset()
+            self.angle_pid.reset()
+
+    def patrol_behavior(self):
+        """
+        Patrol behavior: counter-rotation search for cats.
+        Alternates rotation direction every segment.
+        Uses high-level motor commands.
+        """
+        elapsed = time.time() - self.state_start_time
+        segment_elapsed = elapsed % (self.PATROL_SEGMENT_DURATION * 2)
+
+        # Determine current rotation direction based on time
+        if segment_elapsed < self.PATROL_SEGMENT_DURATION:
+            # First half: rotate right
+            self.motors.rotate_right(self.PATROL_ROTATION_SPEED)
+            direction = "RIGHT"
+        else:
+            # Second half: rotate left
+            self.motors.rotate_left(self.PATROL_ROTATION_SPEED)
+            direction = "LEFT"
+
+        # Check if patrol cycle is complete (4 segments = 2 full counter-rotations)
+        if elapsed > self.PATROL_SEGMENT_DURATION * 4:
+            self.last_patrol_time = time.time()
+            self.motors.stop()
+            self.change_state(CatFollowerState.IDLE)
+            return
+
+        logger.debug(f"[PATROL] Rotating {direction} at {self.PATROL_ROTATION_SPEED}%")
+
+    def follow_behavior(self, cat: CatDetection):
+        """
+        Follow behavior using PID controllers and high-level commands.
+        PRIORITY: Centering first, then distance!
+
+        Args:
+            cat: Detected cat
+        """
+        # Update last seen time
+        self.last_cat_seen_time = time.time()
+
+        # ROTATION: Use PID for smooth centering
+        # Error is angle offset (positive = cat to the right)
+        rotation_raw = self.angle_pid.update(cat.angle_offset)
+
+        # If cat is way off center, boost rotation
+        is_way_off = abs(cat.angle_offset) > 15.0
+
+        if is_way_off:
+            rotation_raw = rotation_raw * 1.4
+
+        # Convert to percentage (-100 to +100)
+        rotation_percent = int(max(-100, min(100, rotation_raw * 100 / self.max_speed)))
+
+        # FORWARD/BACKWARD: Use PID for smooth distance control
+        distance_error = cat.distance - self.target_distance
+
+        if is_way_off:
+            # Cat way off center - focus on rotation, stop forward
+            forward_percent = 0
+            self.distance_pid.integral *= 0.5
+        elif abs(distance_error) < self.distance_tolerance:
+            # Within tolerance - stop
+            forward_percent = 0
+            self.distance_pid.integral = 0
+        else:
+            # Use PID for distance control
+            forward_raw = self.distance_pid.update(distance_error)
+
+            # Reduce forward when also rotating (prioritize centering)
+            rotation_factor = 1.0 - min(abs(rotation_percent) / 100, 0.6)
+            forward_raw = forward_raw * rotation_factor
+
+            # Convert to percentage
+            forward_percent = int(max(-100, min(100, forward_raw * 100 / self.max_speed)))
+
+        # Apply obstacle avoidance
+        if self.last_depth_map is not None and forward_percent > 0:
+            speed_factor = self.get_obstacle_speed_factor(self.last_depth_map)
+            forward_percent = int(forward_percent * speed_factor)
+
+        # Send high-level command
+        self.motors.drive(forward_percent, rotation_percent)
+
+        # Store for logging
+        self.last_forward = forward_percent
+        self.last_rotation = rotation_percent
+
+    def update_state_machine(self, cat: Optional[CatDetection]):
+        """
+        Main state machine update.
+        Calls motor commands directly using high-level API.
+
+        Args:
+            cat: Detected cat (or None)
+        """
+        current_time = time.time()
+
+        # ===== CAT DETECTED: STOP PATROL AND FOLLOW =====
+        if cat is not None:
+            # Cat detected! Immediately switch to FOLLOW
+            if self.state != CatFollowerState.FOLLOW:
+                self.motors.stop()  # Stop any patrol rotation first
+                self.change_state(CatFollowerState.FOLLOW)
+            self.follow_behavior(cat)
+            return
+
+        # ===== NO CAT DETECTED =====
+        time_since_cat = current_time - self.last_cat_seen_time
+
+        if self.state == CatFollowerState.FOLLOW:
+            # Was following, cat lost
+            if time_since_cat > self.CAT_LOST_TIMEOUT:
+                logger.info(f"Cat lost for {time_since_cat:.1f}s, starting patrol")
+                self.motors.stop()
+                self.change_state(CatFollowerState.PATROL)
+            else:
+                # Keep reduced command briefly (cat might reappear)
+                self.motors.drive(
+                    int(self.last_forward * 0.5),
+                    int(self.last_rotation * 0.8)
+                )
+
+        elif self.state == CatFollowerState.IDLE:
+            # Check if it's time for patrol
+            time_since_patrol = current_time - self.last_patrol_time
+            if time_since_patrol > self.PATROL_INTERVAL:
+                logger.info(f"Starting patrol (last: {time_since_patrol:.0f}s ago)")
+                self.change_state(CatFollowerState.PATROL)
+            else:
+                self.motors.stop()
+
+        elif self.state == CatFollowerState.PATROL:
+            self.patrol_behavior()
+
+    # ==================== END STATE MACHINE ====================
+
     def apply_control(self, forward: int, rotation: int):
         """
-        Apply motor control
+        Apply motor control with smoothing.
+
+        The RobustModbusController handles continuous command refresh
+        in a background thread at 20Hz, so we just set the target speeds.
 
         Args:
             forward: Forward speed (-255 to +255)
@@ -452,15 +799,14 @@ class CatFollower:
         if self.motors is None:
             return
 
-        # Differential drive mixing
-        left_speed = forward - rotation
-        right_speed = forward + rotation
+        # Apply smoothing (exponential moving average)
+        forward = int(self.smoothing_factor * self.last_forward + (1 - self.smoothing_factor) * forward)
+        rotation = int(self.smoothing_factor * self.last_rotation + (1 - self.smoothing_factor) * rotation)
+        self.last_forward = forward
+        self.last_rotation = rotation
 
-        # Clamp speeds
-        left_speed = int(np.clip(left_speed, -255, 255))
-        right_speed = int(np.clip(right_speed, -255, 255))
-
-        self.motors.set_motors(left_speed, right_speed, left_speed, right_speed)
+        # Use the controller's differential drive method
+        self.motors.set_differential(forward, rotation)
 
     def draw_overlay(self, image: np.ndarray, cat: Optional[CatDetection]) -> np.ndarray:
         """Draw debug overlay on image"""
@@ -523,6 +869,38 @@ class CatFollower:
 
         return result
 
+    def draw_overlay_with_state(self, image: np.ndarray, cat: Optional[CatDetection]) -> np.ndarray:
+        """Draw debug overlay with state machine info"""
+        result = self.draw_overlay(image, cat)
+
+        # Draw state indicator
+        state_colors = {
+            CatFollowerState.PATROL: (0, 255, 255),   # Yellow
+            CatFollowerState.FOLLOW: (0, 255, 0),     # Green
+            CatFollowerState.IDLE: (128, 128, 128),   # Gray
+        }
+        color = state_colors.get(self.state, (255, 255, 255))
+
+        # State box
+        cv2.rectangle(result, (self.frame_width - 120, 5), (self.frame_width - 5, 35), color, -1)
+        cv2.putText(result, self.state, (self.frame_width - 115, 28),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+        # Patrol indicator
+        if self.state == CatFollowerState.PATROL:
+            elapsed = time.time() - self.state_start_time
+            progress = min(elapsed / self.PATROL_DURATION, 1.0)
+            bar_width = int(100 * progress)
+            cv2.rectangle(result, (10, self.frame_height - 40),
+                         (10 + bar_width, self.frame_height - 30), (0, 255, 255), -1)
+            cv2.rectangle(result, (10, self.frame_height - 40),
+                         (110, self.frame_height - 30), (255, 255, 255), 1)
+            direction = "→" if self.patrol_direction > 0 else "←"
+            cv2.putText(result, f"Patrol {direction}", (120, self.frame_height - 32),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        return result
+
     def run_with_cameras(self, left_id: int = 1, right_id: int = 0,
                         show_preview: bool = True):
         """
@@ -549,7 +927,15 @@ class CatFollower:
             flip_method=2  # 180° rotation for upside-down cameras
         ) as camera:
             self.running = True
-            no_cat_frames = 0
+            self._frame_count = 0
+
+            # Initialize state machine
+            self.state_start_time = time.time()
+            self.last_cat_seen_time = 0
+            self.last_patrol_time = time.time() - self.PATROL_INTERVAL  # Start with patrol
+
+            logger.info("State machine started in PATROL mode")
+            self.change_state(CatFollowerState.PATROL)
 
             try:
                 while self.running:
@@ -557,24 +943,22 @@ class CatFollower:
                     if not ret:
                         continue
 
-                    # Process frame
+                    # Process frame and detect cat
                     cat = self.process_frame(frame.left, frame.right)
 
-                    if cat is not None:
-                        no_cat_frames = 0
-                        forward, rotation = self.compute_control(cat)
-                        self.apply_control(forward, rotation)
-                        logger.debug(f"Cat at {cat.distance:.2f}m, {cat.angle_offset:.1f}deg "
-                                   f"-> fwd={forward}, rot={rotation}")
-                    else:
-                        no_cat_frames += 1
-                        # Stop if cat lost for too long
-                        if no_cat_frames > 10:
-                            self.motors.stop()
+                    # Update state machine (motor commands are called internally)
+                    self.update_state_machine(cat)
+
+                    # Log status periodically
+                    self._frame_count += 1
+                    if self._frame_count % 10 == 0:
+                        if cat is not None:
+                            logger.info(f"[{self.state}] Cat at {cat.distance:.2f}m, "
+                                       f"{cat.angle_offset:.1f}° -> fwd={self.last_forward}%, rot={self.last_rotation}%")
 
                     # Show preview
                     if show_preview:
-                        preview = self.draw_overlay(frame.left, cat)
+                        preview = self.draw_overlay_with_state(frame.left, cat)
                         cv2.imshow("Cat Follower", preview)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
@@ -632,13 +1016,13 @@ class CatFollower:
         self.running = False
         if self.motors:
             self.motors.stop()
-            self.motors.close()
+            self.motors.disconnect()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Cat Follower for CLOVER Rover")
-    parser.add_argument('--target-distance', type=float, default=0.5,
-                       help='Target following distance in meters (default: 0.5)')
+    parser.add_argument('--target-distance', type=float, default=0.6,
+                       help='Target following distance in meters (default: 0.6)')
     parser.add_argument('--serial', type=str, default='/dev/ttyUSB0',
                        help='Serial port for Arduino')
     parser.add_argument('--video', type=str, default=None,
@@ -658,8 +1042,8 @@ def main():
     follower = CatFollower(
         target_distance=args.target_distance,
         distance_tolerance=0.1,
-        angle_tolerance=10.0,
-        max_speed=80
+        angle_tolerance=8.0,   # Slightly relaxed for faster movement
+        max_speed=200  # Fast response
     )
 
     try:
