@@ -239,8 +239,14 @@ class CatFollower:
         self.kp_distance = 150  # Forward/back gain
         self.kp_angle = 2.0     # Rotation gain
 
+        # Obstacle avoidance parameters
+        self.obstacle_threshold = 0.4  # Stop if obstacle closer than 40cm
+        self.obstacle_slowdown = 0.6   # Slow down if obstacle closer than 60cm
+        self.obstacle_detected = False
+        self.last_depth_map = None
+
         logger.info(f"CatFollower initialized: target={target_distance}m, "
-                   f"tolerance={distance_tolerance}m")
+                   f"tolerance={distance_tolerance}m, obstacle_threshold={self.obstacle_threshold}m")
 
     def initialize(self, serial_port: str = '/dev/ttyUSB0') -> bool:
         """Initialize all components"""
@@ -251,12 +257,9 @@ class CatFollower:
                 model_path="/home/jetsonnano/autonomous-rover/models/yolo11n.pt"
             )
 
-            # Initialize depth estimator
+            # Initialize depth estimator with REAL calibration
             logger.info("Initializing depth estimator...")
-            calibration = StereoCalibration(
-                baseline=0.06,  # 6cm - adjust for your camera setup!
-                focal_length=500.0,  # Calibrate for your camera
-            )
+            calibration = StereoCalibration.load_from_file()
             self.depth_estimator = StereoDepthEstimator(calibration)
 
             # Initialize motor controller
@@ -271,6 +274,70 @@ class CatFollower:
         except Exception as e:
             logger.error(f"Initialization error: {e}")
             return False
+
+    def check_obstacles(self, depth_map: np.ndarray) -> bool:
+        """
+        Check for obstacles in the path
+
+        Checks the lower center region of the depth map where obstacles
+        would be in the rover's path.
+
+        Args:
+            depth_map: Depth map in meters
+
+        Returns:
+            True if obstacle detected within threshold
+        """
+        h, w = depth_map.shape[:2]
+
+        # Check lower third, center portion (where rover is heading)
+        y1 = int(h * 0.5)  # Lower half
+        y2 = h
+        x1 = int(w * 0.25)  # Center 50%
+        x2 = int(w * 0.75)
+
+        roi = depth_map[y1:y2, x1:x2]
+        valid = roi[(roi > 0.1) & (roi < 10.0)]  # Valid depth readings
+
+        if len(valid) < 100:  # Not enough valid pixels
+            return False
+
+        # Use 10th percentile (closest obstacles)
+        min_distance = np.percentile(valid, 10)
+
+        return min_distance < self.obstacle_threshold
+
+    def get_obstacle_speed_factor(self, depth_map: np.ndarray) -> float:
+        """
+        Get speed reduction factor based on obstacle proximity
+
+        Returns:
+            Factor 0.0-1.0 (0=stop, 1=full speed)
+        """
+        h, w = depth_map.shape[:2]
+
+        # Check center lower region
+        y1 = int(h * 0.5)
+        y2 = h
+        x1 = int(w * 0.25)
+        x2 = int(w * 0.75)
+
+        roi = depth_map[y1:y2, x1:x2]
+        valid = roi[(roi > 0.1) & (roi < 10.0)]
+
+        if len(valid) < 100:
+            return 1.0  # No valid data, assume clear
+
+        min_distance = np.percentile(valid, 10)
+
+        if min_distance < self.obstacle_threshold:
+            return 0.0  # Stop!
+        elif min_distance < self.obstacle_slowdown:
+            # Linear slowdown between threshold and slowdown distance
+            factor = (min_distance - self.obstacle_threshold) / (self.obstacle_slowdown - self.obstacle_threshold)
+            return max(0.3, factor)  # Minimum 30% speed
+
+        return 1.0  # Full speed
 
     def process_frame(self, left: np.ndarray, right: np.ndarray) -> Optional[CatDetection]:
         """
@@ -294,6 +361,10 @@ class CatFollower:
 
         # Get depth map
         depth_map = self.depth_estimator.compute_depth(left, right)
+        self.last_depth_map = depth_map
+
+        # Check for obstacles
+        self.obstacle_detected = self.check_obstacles(depth_map)
 
         # Find closest cat
         best_cat = None
@@ -356,6 +427,17 @@ class CatFollower:
                 -self.max_speed,
                 self.max_speed
             ))
+
+        # Apply obstacle avoidance
+        if self.last_depth_map is not None:
+            speed_factor = self.get_obstacle_speed_factor(self.last_depth_map)
+
+            # Only reduce forward speed, not backward
+            if forward_speed > 0:
+                forward_speed = int(forward_speed * speed_factor)
+
+                if speed_factor < 0.5:
+                    logger.warning(f"Obstacle detected! Reducing speed to {speed_factor*100:.0f}%")
 
         return forward_speed, rotation_speed
 
@@ -428,6 +510,16 @@ class CatFollower:
         cv2.putText(result, f"Target: {self.target_distance}m",
                    (10, self.frame_height - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # Draw obstacle warning
+        if self.obstacle_detected:
+            cv2.putText(result, "OBSTACLE!", (self.frame_width - 150, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            # Draw obstacle zone
+            h, w = self.frame_height, self.frame_width
+            y1 = int(h * 0.5)
+            x1, x2 = int(w * 0.25), int(w * 0.75)
+            cv2.rectangle(result, (x1, y1), (x2, h), (0, 0, 255), 2)
 
         return result
 

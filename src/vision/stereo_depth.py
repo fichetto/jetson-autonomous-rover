@@ -2,22 +2,61 @@
 """
 Stereo Depth Estimation for CLOVER Rover
 Uses OpenCV StereoSGBM for disparity calculation
+Now with real calibration support!
 """
 
 import cv2
 import numpy as np
 from typing import Optional, Tuple
 from dataclasses import dataclass
+from pathlib import Path
 from loguru import logger
 
 
 @dataclass
 class StereoCalibration:
     """Stereo camera calibration parameters"""
-    baseline: float = 0.06  # 6cm baseline between cameras (measure your setup!)
-    focal_length: float = 500.0  # Focal length in pixels (calibrate for your camera)
-    cx: float = 640.0  # Principal point x
-    cy: float = 360.0  # Principal point y
+    baseline: float = 0.0801  # From calibration
+    focal_length: float = 796.7  # From calibration
+    cx: float = 320.0  # Principal point x (640/2)
+    cy: float = 240.0  # Principal point y (480/2)
+    # Rectification maps (loaded from calibration file)
+    map1_l: Optional[np.ndarray] = None
+    map2_l: Optional[np.ndarray] = None
+    map1_r: Optional[np.ndarray] = None
+    map2_r: Optional[np.ndarray] = None
+
+    @classmethod
+    def load_from_file(cls, calib_path: str = None) -> 'StereoCalibration':
+        """Load calibration from .npz file"""
+        if calib_path is None:
+            calib_path = Path(__file__).parent.parent.parent / "config" / "stereo_calibration.npz"
+
+        calib_path = Path(calib_path)
+        if not calib_path.exists():
+            logger.warning(f"Calibration file not found: {calib_path}, using defaults")
+            return cls()
+
+        try:
+            data = np.load(calib_path)
+            calib = cls(
+                baseline=float(data['baseline']),
+                focal_length=float(data['focal_length']),
+                map1_l=data['map1_l'],
+                map2_l=data['map2_l'],
+                map1_r=data['map1_r'],
+                map2_r=data['map2_r'],
+            )
+            logger.success(f"Loaded calibration: baseline={calib.baseline*100:.1f}cm, focal={calib.focal_length:.0f}px")
+            return calib
+        except Exception as e:
+            logger.error(f"Failed to load calibration: {e}")
+            return cls()
+
+    @property
+    def has_rectification(self) -> bool:
+        """Check if rectification maps are available"""
+        return self.map1_l is not None
 
 
 class StereoDepthEstimator:
@@ -79,6 +118,24 @@ class StereoDepthEstimator:
             self.wls_filter = None
             logger.warning("WLS filter not available (opencv-contrib not installed)")
 
+    def rectify(self, left: np.ndarray, right: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Rectify stereo pair using calibration maps
+
+        Args:
+            left: Left image
+            right: Right image
+
+        Returns:
+            Rectified (left, right) pair
+        """
+        if not self.calibration.has_rectification:
+            return left, right
+
+        left_rect = cv2.remap(left, self.calibration.map1_l, self.calibration.map2_l, cv2.INTER_LINEAR)
+        right_rect = cv2.remap(right, self.calibration.map1_r, self.calibration.map2_r, cv2.INTER_LINEAR)
+        return left_rect, right_rect
+
     def compute_disparity(self, left: np.ndarray, right: np.ndarray,
                          use_wls: bool = True) -> np.ndarray:
         """
@@ -92,13 +149,16 @@ class StereoDepthEstimator:
         Returns:
             Disparity map (float32)
         """
+        # Apply rectification if calibration available
+        left_rect, right_rect = self.rectify(left, right)
+
         # Convert to grayscale if needed
-        if len(left.shape) == 3:
-            left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
-            right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+        if len(left_rect.shape) == 3:
+            left_gray = cv2.cvtColor(left_rect, cv2.COLOR_BGR2GRAY)
+            right_gray = cv2.cvtColor(right_rect, cv2.COLOR_BGR2GRAY)
         else:
-            left_gray = left
-            right_gray = right
+            left_gray = left_rect
+            right_gray = right_rect
 
         # Compute disparity
         left_disp = self.stereo.compute(left_gray, right_gray)
