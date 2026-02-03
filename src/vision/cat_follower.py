@@ -523,7 +523,7 @@ class CatFollower:
 
         return result
 
-    def run_with_cameras(self, left_id: int = 0, right_id: int = 1,
+    def run_with_cameras(self, left_id: int = 1, right_id: int = 0,
                         show_preview: bool = True):
         """
         Run cat follower with stereo cameras
@@ -545,7 +545,8 @@ class CatFollower:
             right_sensor_id=right_id,
             width=640,  # Lower resolution for faster processing
             height=480,
-            fps=30
+            fps=30,
+            flip_method=2  # 180° rotation for upside-down cameras
         ) as camera:
             self.running = True
             no_cat_frames = 0
