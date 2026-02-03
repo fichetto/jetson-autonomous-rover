@@ -66,8 +66,8 @@ class StereoCamera:
 
     def __init__(
         self,
-        left_sensor_id: int = 0,
-        right_sensor_id: int = 1,
+        left_sensor_id: int = 1,  # Swapped: cameras mounted upside-down
+        right_sensor_id: int = 0,
         width: int = 1280,
         height: int = 720,
         fps: int = 30,
@@ -438,8 +438,8 @@ if __name__ == "__main__":
         nav_frames.append(frame.frame_id)
 
     with StereoCamera(
-        left_sensor_id=0,
-        right_sensor_id=1,
+        left_sensor_id=1,  # Swapped: cameras mounted upside-down
+        right_sensor_id=0,
         width=1280,
         height=720,
         fps=30

@@ -48,8 +48,9 @@ def main():
 
     # Apri camere
     print("Apertura camere...")
-    cam_l = cv2.VideoCapture(create_pipeline(0), cv2.CAP_GSTREAMER)
-    cam_r = cv2.VideoCapture(create_pipeline(1), cv2.CAP_GSTREAMER)
+    # Sensor IDs swapped: cameras mounted upside-down
+    cam_l = cv2.VideoCapture(create_pipeline(1), cv2.CAP_GSTREAMER)
+    cam_r = cv2.VideoCapture(create_pipeline(0), cv2.CAP_GSTREAMER)
 
     if not cam_l.isOpened() or not cam_r.isOpened():
         print("[!] Errore apertura camere")

@@ -99,7 +99,7 @@ class MJPEGServer:
         """Open stereo cameras"""
         try:
             # Try CSI cameras first
-            for sensor_id in [0, 1]:
+            for sensor_id in [1, 0]:  # Swapped: cameras mounted upside-down
                 pipeline = self._gstreamer_pipeline(sensor_id)
                 logger.info(f"Opening camera {sensor_id}...")
                 cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)

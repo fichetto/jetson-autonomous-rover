@@ -51,7 +51,7 @@ def create_gstreamer_pipeline(sensor_id, width=1280, height=720, fps=30):
 def open_cameras():
     """Apri entrambe le telecamere"""
     cameras = []
-    for i in [0, 1]:
+    for i in [1, 0]:  # Swapped: cameras mounted upside-down
         pipeline = create_gstreamer_pipeline(i)
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if cap.isOpened():
